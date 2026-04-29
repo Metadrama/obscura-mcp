@@ -6,45 +6,85 @@ This MCP server enables AI agents and LLMs to use Obscura for high-performance w
 
 ## Features
 
-- 🚀 **High-Performance**: 85ms page load, instant startup (vs 500ms+ for Chrome)
-- 🎭 **Anti-Detection**: Built-in stealth mode for bypassing bot detection
-- 💾 **Lightweight**: 30 MB memory footprint, 70 MB binary
-- 🔌 **MCP Compatible**: Works with Claude, GPT, and other MCP-aware AI systems
-- 📄 **Multiple Output Formats**: HTML, plain text, or links extraction
-- 🔀 **Dual Transport**: `stdio` (default) and streamable HTTP
+-  **High-Performance**: 85ms page load, instant startup (vs 500ms+ for Chrome)
+-  **Anti-Detection**: Built-in stealth mode for bypassing bot detection
+-  **Lightweight**: 30 MB memory footprint, 70 MB binary
+-  **MCP Compatible**: Works with Claude, GPT, and other MCP-aware AI systems
+-  **Multiple Output Formats**: HTML, plain text, or links extraction
+-  **Dual Transport**: `stdio` (default) and streamable HTTP
 
 ## Prerequisites
 
 1. **Node.js** 16+
-2. **Obscura Binary** - Download from [Obscura releases](https://github.com/h4ckf0r0day/obscura/releases)
+2. **Obscura binary** from [Obscura releases](https://github.com/h4ckf0r0day/obscura/releases)
+
+This adapter does not embed a browser engine. It calls the Obscura CLI binary directly.
+That means Obscura is required on **Linux, macOS, and Windows**.
 
 ### Install Obscura
 
+#### Linux (x86_64)
+
 ```bash
-# Linux x86_64
 curl -LO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-linux.tar.gz
 tar xzf obscura-x86_64-linux.tar.gz
 sudo mv obscura /usr/local/bin/
+obscura --version
+```
 
-# macOS Apple Silicon
+#### macOS (Apple Silicon)
+
+```bash
 curl -LO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-aarch64-macos.tar.gz
 tar xzf obscura-aarch64-macos.tar.gz
 sudo mv obscura /usr/local/bin/
+obscura --version
+```
 
-# macOS Intel
+#### macOS (Intel)
+
+```bash
 curl -LO https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-macos.tar.gz
 tar xzf obscura-x86_64-macos.tar.gz
 sudo mv obscura /usr/local/bin/
+obscura --version
+```
 
-# Windows
-# Download from releases, extract, and add to PATH
+#### Windows (PowerShell, simplest local setup)
+
+You do not need to edit PATH if you set `OBSCURA_PATH` in your MCP server config.
+
+1. Download the Windows release zip from Obscura releases.
+2. Extract it to a stable location, for example: `C:\tools\obscura\obscura.exe`.
+3. Use that full path in `OBSCURA_PATH` in your MCP configuration.
+
+Example value:
+
+```text
+OBSCURA_PATH=C:\tools\obscura\obscura.exe
 ```
 
 ## Installation
 
+### Option A (recommended now): run from this repository
+
+```bash
+git clone https://github.com/Metadrama/0bscura-mcp.git
+cd 0bscura-mcp
+npm install
+```
+
+Then point your MCP client config to this local `index.js` path.
+
+### Option B: npm package install (only after publish)
+
+If/when this package is published to npm, then this command is valid:
+
 ```bash
 npm install mcp-obscura
 ```
+
+`npm install mcp-obscura` does **not** automatically link to the GitHub repository unless a published npm package exists for that name.
 
 ## Configuration
 
@@ -136,7 +176,6 @@ Add to your MCP configuration file:
 - `MCP_HTTP_PORT` - HTTP bind port (default: `3000`)
 - `MCP_HTTP_PATH` - HTTP endpoint path (default: `/mcp`)
 - `OBSCURA_TIMEOUT_MS` - Obscura execution timeout in ms (default: `30000`)
-- `MAX_BODY_BYTES` - Maximum HTTP request body size in bytes (default: `1048576`)
 
 ## Usage
 

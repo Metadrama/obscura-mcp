@@ -18,7 +18,6 @@ const MCP_HTTP_HOST = process.env.MCP_HTTP_HOST || "127.0.0.1";
 const MCP_HTTP_PORT = Number(process.env.MCP_HTTP_PORT || "3000");
 const MCP_HTTP_PATH = process.env.MCP_HTTP_PATH || "/mcp";
 const OBSCURA_TIMEOUT_MS = Number(process.env.OBSCURA_TIMEOUT_MS || "30000");
-const MAX_BODY_BYTES = Number(process.env.MAX_BODY_BYTES || "1048576");
 
 function getTransportMode() {
   const directArg = process.argv.find((arg) => arg.startsWith("--transport="));
@@ -196,39 +195,6 @@ class ObscuraServer {
     console.error("Obscura MCP Server running on stdio");
   }
 
-  async readBody(req) {
-    return new Promise((resolve, reject) => {
-      let size = 0;
-      let data = "";
-
-      req.setEncoding("utf8");
-      req.on("data", (chunk) => {
-        size += Buffer.byteLength(chunk, "utf8");
-        if (size > MAX_BODY_BYTES) {
-          reject(new Error(`Request body exceeds ${MAX_BODY_BYTES} bytes`));
-          req.destroy();
-          return;
-        }
-        data += chunk;
-      });
-
-      req.on("end", () => {
-        if (!data) {
-          resolve(undefined);
-          return;
-        }
-
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          reject(new Error("Invalid JSON body"));
-        }
-      });
-
-      req.on("error", reject);
-    });
-  }
-
   async runHttp() {
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -254,8 +220,7 @@ class ObscuraServer {
           return;
         }
 
-        const parsedBody = req.method === "POST" ? await this.readBody(req) : undefined;
-        await transport.handleRequest(req, res, parsedBody);
+        await transport.handleRequest(req, res);
       } catch (error) {
         if (!res.headersSent) {
           res.statusCode = 500;
