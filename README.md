@@ -111,17 +111,13 @@ Fetches a URL using the Obscura engine.
 
 ## Architecture
 
-This adapter uses a simple and robust architecture: it wraps Obscura's command-line interface (`obscura fetch`) as a subprocess.
+This adapter uses a robust, high-performance architecture. On startup, it launches the `obscura serve` command as a background process and maintains a persistent connection to its Chrome DevTools Protocol (CDP) WebSocket endpoint.
 
-This approach is easy to set up and requires no complex dependencies.
-
-**Roadmap:** A future version may use the Chrome DevTools Protocol (CDP) for direct browser communication, which would offer lower latency and more advanced control.
+This stateful approach provides the lowest possible latency for browsing operations, as the browser process is always running and ready to accept commands. All communication happens over the CDP connection, managed by `puppeteer-core`.
 
 ## Limitations
 
 - The `obscura` binary must be installed separately.
-- The adapter's functionality is limited to the capabilities exposed by the `obscura` CLI.
-- Performance is dependent on the overhead of spawning a new CLI process for each request.
 
 ## Related Projects
 

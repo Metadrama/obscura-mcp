@@ -10,6 +10,7 @@ const {
   ListToolsRequestSchema,
 } = require("@modelcontextprotocol/sdk/types.js");
 const { spawn } = require("child_process");
+const puppeteer = require("puppeteer-core");
 const http = require("http");
 
 // Configuration
@@ -35,6 +36,8 @@ function getTransportMode() {
 
 class ObscuraServer {
   constructor() {
+    this.obscuraProcess = null;
+    this.browser = null;
     this.server = new Server(
       {
         name: "mcp-obscura",
@@ -69,70 +72,43 @@ class ObscuraServer {
     return parsed.toString();
   }
 
-  runObscura(args) {
-    return new Promise((resolve, reject) => {
-      const child = spawn(OBSCURA_PATH, args, {
-        shell: false,
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGTERM");
-      }, OBSCURA_TIMEOUT_MS);
-
-      child.stdout.on("data", (chunk) => {
-        stdout += chunk.toString("utf8");
-      });
-
-      child.stderr.on("data", (chunk) => {
-        stderr += chunk.toString("utf8");
-      });
-
-      child.on("error", (error) => {
-        clearTimeout(timeout);
-        reject(new Error(`Failed to start Obscura binary: ${error.message}`));
-      });
-
-      child.on("close", (code) => {
-        clearTimeout(timeout);
-        if (timedOut) {
-          reject(
-            new Error(
-              `Obscura command timed out after ${OBSCURA_TIMEOUT_MS}ms`,
-            ),
-          );
-          return;
-        }
-
-        if (code !== 0) {
-          const details = stderr.trim() || stdout.trim() || `exit code ${code}`;
-          reject(new Error(`Obscura command failed: ${details}`));
-          return;
-        }
-
-        resolve(stdout);
-      });
-    });
-  }
-
   async browseUrl(args = {}) {
     const url = this.validateUrl(args.url);
     const dump = ["html", "text", "links"].includes(args.dump)
       ? args.dump
       : "html";
-
-    const cmdArgs = ["fetch", url, "--dump", dump];
-    if (args.stealth !== false) {
-      cmdArgs.push("--stealth");
+    
+    // TODO: The 'stealth' parameter from the original CLI is not directly mapped here.
+    // Obscura's server mode inherently uses stealth capabilities.
+    
+    if (!this.browser) {
+      throw new Error("Obscura browser is not connected.");
     }
 
-    return this.runObscura(cmdArgs);
+    let page;
+    try {
+      page = await this.browser.newPage();
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: OBSCURA_TIMEOUT_MS });
+
+      if (dump === "text") {
+        return await page.evaluate(() => document.body.innerText);
+      }
+
+      if (dump === "links") {
+        const links = await page.evaluate(() => 
+          Array.from(document.querySelectorAll('a'), a => a.href)
+        );
+        return links.join('\\n');
+      }
+
+      // Default to HTML
+      return await page.content();
+
+    } finally {
+      if (page) {
+        await page.close();
+      }
+    }
   }
 
   setupTools() {
@@ -249,7 +225,62 @@ class ObscuraServer {
     );
   }
 
+  startObscuraService() {
+    return new Promise((resolve, reject) => {
+      console.error("Starting Obscura service...");
+      this.obscuraProcess = spawn(OBSCURA_PATH, ["serve"], {
+        shell: false,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"], // Listen on both stdout and stderr
+      });
+
+      const onData = async (chunk) => {
+        const output = chunk.toString("utf8");
+        console.error(`Obscura Service: ${output.trim()}`);
+        const match = output.match(/CDP server: (ws:\/\/.*)/);
+        if (match && match[1]) {
+          const endpoint = match[1];
+          console.error(`Obscura listening on ${endpoint}, connecting...`);
+          try {
+            this.browser = await puppeteer.connect({
+              browserWSEndpoint: endpoint,
+              defaultViewport: null,
+            });
+            console.error("Successfully connected to Obscura browser.");
+            this.obscuraProcess.stderr.removeListener("data", onData);
+            resolve();
+          } catch (error) {
+            reject(new Error(`Failed to connect to Obscura via CDP: ${error.message}`));
+          }
+        }
+      };
+
+      this.obscuraProcess.stdout.on("data", onData); // Check stdout
+      this.obscuraProcess.stderr.on("data", onData); // And stderr
+
+      this.obscuraProcess.on("error", (error) => {
+        reject(new Error(`Failed to start Obscura service binary: ${error.message}`));
+      });
+
+      this.obscuraProcess.on("close", (code) => {
+        console.error(`Obscura service process exited with code ${code}`);
+        this.obscuraProcess = null;
+        this.browser = null;
+      });
+    });
+  }
+
+  async stopObscuraService() {
+    if (this.browser && this.browser.isConnected()) {
+      await this.browser.disconnect();
+    }
+    if (this.obscuraProcess) {
+      this.obscuraProcess.kill("SIGTERM");
+    }
+  }
+
   async run() {
+    await this.startObscuraService();
     const mode = getTransportMode();
     if (mode === "http") {
       await this.runHttp();
@@ -266,6 +297,12 @@ class ObscuraServer {
 
 const server = new ObscuraServer();
 server.run().catch((error) => {
-  console.error("Fatal error running server:", error);
+  console.error("Fatal error running adapter:", error);
   process.exit(1);
+});
+
+process.on('SIGINT', async () => {
+    console.error("Caught interrupt signal, shutting down...");
+    await server.stopObscuraService();
+    process.exit(0);
 });
