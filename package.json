@@ -1,0 +1,38 @@
+{
+  "name": "mcp-obscura",
+  "version": "1.0.0",
+  "description": "MCP server adapter for Obscura headless browser - high-performance web scraping with anti-detection",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js"
+  },
+  "keywords": [
+    "mcp",
+    "obscura",
+    "headless-browser",
+    "web-scraping",
+    "ai-agents",
+    "model-context-protocol"
+  ],
+  "author": "mino",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mino/mcp-obscura"
+  },
+  "bugs": {
+    "url": "https://github.com/mino/mcp-obscura/issues"
+  },
+  "homepage": "https://github.com/mino/mcp-obscura#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "optionalDependencies": {
+    "puppeteer-core": "^24.42.0"
+  }
+}
