@@ -109,15 +109,7 @@ Fetches a URL using the Obscura engine.
 - `dump` (string, optional): The output format. Can be "html", "text", or "links". Defaults to "html".
 - `stealth` (boolean, optional): Enables Obscura's stealth mode to bypass bot detection. Defaults to `true`.
 
-## Architecture
 
-This adapter uses a robust, high-performance architecture. On startup, it launches the `obscura serve` command as a background process and maintains a persistent connection to its Chrome DevTools Protocol (CDP) WebSocket endpoint.
-
-This stateful approach provides the lowest possible latency for browsing operations, as the browser process is always running and ready to accept commands. All communication happens over the CDP connection, managed by `puppeteer-core`.
-
-## Limitations
-
-- The `obscura` binary must be installed separately.
 
 ## Related Projects
 
