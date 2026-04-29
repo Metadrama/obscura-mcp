@@ -11,6 +11,7 @@ This MCP server enables AI agents and LLMs to use Obscura for high-performance w
 - 💾 **Lightweight**: 30 MB memory footprint, 70 MB binary
 - 🔌 **MCP Compatible**: Works with Claude, GPT, and other MCP-aware AI systems
 - 📄 **Multiple Output Formats**: HTML, plain text, or links extraction
+- 🔀 **Dual Transport**: `stdio` (default) and streamable HTTP
 
 ## Prerequisites
 
@@ -47,7 +48,18 @@ npm install mcp-obscura
 
 ## Configuration
 
-Add to your MCP configuration file (usually in VS Code Insiders at `~/.config/Code - Insiders/User/mcp.json`):
+This server can run in two modes:
+
+- `stdio` (default): best baseline for local clients
+- `http`: streamable HTTP endpoint for remote/team scenarios
+
+### VS Code (Stable or Insiders)
+
+Add to your MCP configuration file:
+
+- Workspace: `.vscode/mcp.json`
+- User profile (Stable): `%APPDATA%/Code/User/mcp.json` on Windows
+- User profile (Insiders): `%APPDATA%/Code - Insiders/User/mcp.json` on Windows
 
 ```json
 {
@@ -56,7 +68,60 @@ Add to your MCP configuration file (usually in VS Code Insiders at `~/.config/Co
       "command": "node",
       "args": ["/path/to/mcp-obscura/index.js"],
       "env": {
-        "OBSCURA_PATH": "/usr/local/bin/obscura"
+        "OBSCURA_PATH": "/usr/local/bin/obscura",
+        "MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}
+```
+
+### Claude Code (project-scoped `.mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "mcp-obscura": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/path/to/mcp-obscura/index.js"],
+      "env": {
+        "OBSCURA_PATH": "/usr/local/bin/obscura",
+        "MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}
+```
+
+### Cursor (`.cursor/mcp.json`)
+
+```json
+{
+  "mcpServers": {
+    "mcp-obscura": {
+      "command": "node",
+      "args": ["/path/to/mcp-obscura/index.js"],
+      "env": {
+        "OBSCURA_PATH": "/usr/local/bin/obscura",
+        "MCP_TRANSPORT": "stdio"
+      }
+    }
+  }
+}
+```
+
+### Zed (`~/.config/zed/settings.json`)
+
+```json
+{
+  "context_servers": {
+    "mcp-obscura": {
+      "command": "node",
+      "args": ["/path/to/mcp-obscura/index.js"],
+      "env": {
+        "OBSCURA_PATH": "/usr/local/bin/obscura",
+        "MCP_TRANSPORT": "stdio"
       }
     }
   }
@@ -66,6 +131,12 @@ Add to your MCP configuration file (usually in VS Code Insiders at `~/.config/Co
 ### Configuration Options
 
 - `OBSCURA_PATH` - Path to the Obscura binary (default: `obscura` - assumes it's in PATH)
+- `MCP_TRANSPORT` - `stdio` or `http` (default: `stdio`)
+- `MCP_HTTP_HOST` - HTTP bind host (default: `127.0.0.1`)
+- `MCP_HTTP_PORT` - HTTP bind port (default: `3000`)
+- `MCP_HTTP_PATH` - HTTP endpoint path (default: `/mcp`)
+- `OBSCURA_TIMEOUT_MS` - Obscura execution timeout in ms (default: `30000`)
+- `MAX_BODY_BYTES` - Maximum HTTP request body size in bytes (default: `1048576`)
 
 ## Usage
 
@@ -117,6 +188,13 @@ npm install
 node index.js
 ```
 
+Run explicit transport modes:
+
+```bash
+npm run start:stdio
+npm run start:http
+```
+
 ### Testing
 
 ```bash
@@ -131,6 +209,8 @@ The MCP server wraps Obscura's CLI interface:
 2. Translates them to Obscura CLI commands
 3. Executes Obscura binary with appropriate flags
 4. Returns results back through MCP protocol
+
+In HTTP mode, requests are served through a streamable MCP endpoint at `http://<host>:<port><path>`.
 
 ## Performance Comparison
 
@@ -158,6 +238,6 @@ Contributions welcome! Please feel free to submit issues and pull requests.
 
 ## License
 
-MIT © 2025 mino
+MIT © 2026 Metadrama
 
 **Note:** This project adapts [Obscura](https://github.com/h4ckf0r0day/obscura), which is licensed under Apache 2.0. This adapter is provided under MIT license for convenience and compatibility with MCP ecosystems.
