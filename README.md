@@ -14,24 +14,25 @@ This project bridges that gap. It's a simple adapter that exposes Obscura's capa
 
 ## Installation
 
-This package automatically downloads and installs the required `obscura` browser binary for your platform.
+This package installs an `obscura` browser binary during `postinstall` when possible.
 
 ```bash
-# Install the adapter AND the browser engine in one step
+# Install the adapter and let the browser engine bootstrap during postinstall
 npm install -g obscura-mcp
 ```
 
 ### Verification
 
-After installation, verify it was successful by running:
+After installation, verify the server starts by running:
 ```bash
-obscura --version
+npm start
 ```
-You should see the installed version number printed.
+If you already have an Obscura binary installed elsewhere, point the server at it with `OBSCURA_PATH`.
 
 ## Configuration
 
 Point your MCP client configuration to the installed server command or the local `index.js` file. Update the server name and path according to your setup.
+The server resolves Obscura in this order: `OBSCURA_PATH`, `./bin/obscura(.exe)`, then `obscura` on `PATH`.
 
 ### VS Code (Stable or Insiders)
 
@@ -111,7 +112,7 @@ Fetches a URL using the Obscura engine.
 **Parameters:**
 - `url` (string, required): The URL to visit.
 - `dump` (string, optional): The output format. Can be "html", "text", or "links". Defaults to "html".
-- `stealth` (boolean, optional): Enables Obscura's stealth mode to bypass bot detection. Defaults to `true`.
+- `stealth` (boolean, optional): Accepted for compatibility, but currently ignored by the adapter.
 
 
 

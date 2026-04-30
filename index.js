@@ -10,15 +10,34 @@ const {
   ListToolsRequestSchema,
 } = require("@modelcontextprotocol/sdk/types.js");
 const { spawn } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 const puppeteer = require("puppeteer-core");
 const http = require("http");
 
 // Configuration
-const OBSCURA_PATH = path.join(__dirname, 'bin', process.platform === 'win32' ? 'obscura.exe' : 'obscura');
 const MCP_HTTP_HOST = process.env.MCP_HTTP_HOST || "127.0.0.1";
 const MCP_HTTP_PORT = Number(process.env.MCP_HTTP_PORT || "3000");
 const MCP_HTTP_PATH = process.env.MCP_HTTP_PATH || "/mcp";
 const OBSCURA_TIMEOUT_MS = Number(process.env.OBSCURA_TIMEOUT_MS || "30000");
+
+function resolveObscuraPath() {
+  if (process.env.OBSCURA_PATH) {
+    return process.env.OBSCURA_PATH;
+  }
+
+  const localBinary = path.join(
+    __dirname,
+    "bin",
+    process.platform === "win32" ? "obscura.exe" : "obscura",
+  );
+
+  if (fs.existsSync(localBinary)) {
+    return localBinary;
+  }
+
+  return process.platform === "win32" ? "obscura.exe" : "obscura";
+}
 
 function getTransportMode() {
   const directArg = process.argv.find((arg) => arg.startsWith("--transport="));
@@ -227,12 +246,15 @@ class ObscuraServer {
 
   startObscuraService() {
     return new Promise((resolve, reject) => {
+      const obscuraPath = resolveObscuraPath();
       console.error("Starting Obscura service...");
-      this.obscuraProcess = spawn(OBSCURA_PATH, ["serve"], {
+      this.obscuraProcess = spawn(obscuraPath, ["serve"], {
         shell: false,
         windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"], // Listen on both stdout and stderr
+        stdio: ["ignore", "pipe", "pipe"],
       });
+
+      console.error(`Using Obscura binary: ${obscuraPath}`);
 
       const onData = async (chunk) => {
         const output = chunk.toString("utf8");
@@ -255,8 +277,8 @@ class ObscuraServer {
         }
       };
 
-      this.obscuraProcess.stdout.on("data", onData); // Check stdout
-      this.obscuraProcess.stderr.on("data", onData); // And stderr
+      this.obscuraProcess.stdout.on("data", onData);
+      this.obscuraProcess.stderr.on("data", onData);
 
       this.obscuraProcess.on("error", (error) => {
         reject(new Error(`Failed to start Obscura service binary: ${error.message}`));
