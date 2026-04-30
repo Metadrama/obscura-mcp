@@ -104,28 +104,91 @@ class ObscuraServer {
       throw new Error("Obscura browser is not connected.");
     }
 
-    let page;
+    // Use raw CDP to create a new target and navigate
     try {
-      page = await this.browser.newPage();
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: OBSCURA_TIMEOUT_MS });
-
-      if (dump === "text") {
-        return await page.evaluate(() => document.body.innerText);
+      // Create a new target (page) using raw CDP
+      const browserWSEndpoint = this.browser._connection._url;
+      const newTargetResponse = await this.browser._connection.send("Target.createTarget", { url: "about:blank" });
+      const targetId = newTargetResponse.targetId;
+      
+      // Wait a moment for target to initialize
+      await new Promise(r => setTimeout(r, 1000));
+      
+      // Attach to the target and navigate
+      const session = await this.browser._connection.createSession({ targetId });
+      
+      // Enable basic domains before navigating
+      try {
+        await session.send("Page.enable", {});
+        await session.send("DOM.enable", {});
+        await session.send("Runtime.enable", {});
+      } catch (e) {
+        // Ignore domain enable errors - these domains may not be available
       }
-
-      if (dump === "links") {
-        const links = await page.evaluate(() => 
-          Array.from(document.querySelectorAll('a'), a => a.href)
-        );
-        return links.join('\\n');
+      
+      // Navigate
+      await session.send("Page.navigate", { url });
+      
+      // Wait for page to load
+      await new Promise(r => setTimeout(r, 3000));
+      
+      // Extract content
+      let output = "";
+      try {
+        if (dump === "text") {
+          const result = await session.send("Runtime.evaluate", {
+            expression: "document.body.innerText",
+            returnByValue: true
+          });
+          output = result.result.value || "";
+        } else if (dump === "links") {
+          const result = await session.send("Runtime.evaluate", {
+            expression: "Array.from(document.querySelectorAll('a'), a => a.href).join('\\n')",
+            returnByValue: true
+          });
+          output = result.result.value || "";
+        } else {
+          // HTML dump
+          const result = await session.send("DOM.getDocument", {});
+          const htmlResult = await session.send("DOM.getOuterHTML", { nodeId: result.root.nodeId });
+          output = htmlResult.outerHTML || "";
+        }
+      } finally {
+        // Close the session
+        await this.browser._connection.send("Target.closeTarget", { targetId });
       }
-
-      // Default to HTML
-      return await page.content();
-
-    } finally {
-      if (page) {
-        await page.close();
+      
+      return output;
+    } catch (error) {
+      // Fallback: try using Puppeteer's normal API
+      let page;
+      try {
+        page = await this.browser.newPage();
+      } catch (pageErr) {
+        throw error;  // Return original error if fallback also fails
+      }
+      
+      try {
+        await page.goto(url, { waitUntil: 'domContentLoaded', timeout: OBSCURA_TIMEOUT_MS });
+        
+        // Extract content based on dump type
+        if (dump === "text") {
+          return await page.evaluate(() => document.body.innerText);
+        }
+        
+        if (dump === "links") {
+          return await page.evaluate(() =>
+            Array.from(document.querySelectorAll("a"), (a) => a.href).join(
+              "\n",
+            ),
+          );
+        }
+        
+        return await page.content();
+      } finally {
+        if (page) {
+          await page.close();
+        }
       }
     }
   }
@@ -268,6 +331,20 @@ class ObscuraServer {
               browserWSEndpoint: endpoint,
               defaultViewport: null,
             });
+            
+            // Patch the connection to suppress "Unknown domain" errors from Puppeteer trying to use unsupported CDP domains
+            const originalSend = this.browser._connection.send.bind(this.browser._connection);
+            this.browser._connection.send = async function(method, params, ...args) {
+              try {
+                return await originalSend(method, params, ...args);
+              } catch (err) {
+                if (err.message && err.message.includes("Unknown domain")) {
+                  return undefined; // Suppress and return undefined
+                }
+                throw err;
+              }
+            };
+            
             console.error("Successfully connected to Obscura browser.");
             this.obscuraProcess.stderr.removeListener("data", onData);
             resolve();
