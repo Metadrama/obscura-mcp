@@ -1,5 +1,9 @@
 const { spawn } = require("child_process");
 const path = require("path");
+const fs = require("fs");
+
+const binaryName = process.platform === "win32" ? "obscura.exe" : "obscura";
+const binPath = path.join(__dirname, "bin", binaryName);
 
 // Test the MCP server by actually browsing google.com
 const server = spawn("node", [path.join(__dirname, "index.js"), "--transport", "stdio"], {
@@ -7,7 +11,7 @@ const server = spawn("node", [path.join(__dirname, "index.js"), "--transport", "
   cwd: __dirname,
   env: {
     ...process.env,
-    OBSCURA_PATH: path.join(process.env.APPDATA, "npm", "node_modules", "mcp-obscura", "bin", "obscura.exe"),
+    OBSCURA_PATH: binPath,
   },
 });
 

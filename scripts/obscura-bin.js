@@ -1,32 +1,35 @@
 #!/usr/bin/env node
 
-const { spawn } = require("child_process");
-const fs = require("fs");
-const path = require("path");
+const { spawn } = require('child_process');
+const path = require('path');
+const fs = require('fs');
 
-const binaryName = process.platform === "win32" ? "obscura.exe" : "obscura";
-const binaryPath = path.join(__dirname, "..", "bin", binaryName);
+const binaryName = process.platform === 'win32' ? 'obscura.exe' : 'obscura';
+const binPath = path.join(__dirname, '..', 'bin', binaryName);
 
-if (!fs.existsSync(binaryPath)) {
-  console.error(`Obscura binary not found at ${binaryPath}`);
-  console.error("Reinstall mcp-obscura or set OBSCURA_PATH for the MCP adapter.");
+if (!fs.existsSync(binPath)) {
+  console.error(`Error: Obscura binary not found at ${binPath}`);
+  console.error('Please ensure the postinstall script has run successfully.');
   process.exit(1);
 }
 
-const child = spawn(binaryPath, process.argv.slice(2), {
-  stdio: "inherit",
-  windowsHide: true,
+const args = process.argv.slice(2);
+
+const child = spawn(binPath, args, {
+  stdio: 'inherit',
+  env: process.env
 });
 
-child.on("error", (error) => {
-  console.error(`Failed to start Obscura binary: ${error.message}`);
-  process.exit(1);
-});
-
-child.on("exit", (code, signal) => {
-  if (signal) {
-    process.kill(process.pid, signal);
-    return;
+child.on('exit', (code, signal) => {
+  if (code !== null) {
+    process.exit(code);
+  } else if (signal) {
+    // If killed by signal, exit with 1 (or map signals appropriately if needed)
+    process.exit(1);
   }
-  process.exit(code ?? 0);
+});
+
+child.on('error', (err) => {
+  console.error(`Failed to start subprocess: ${err.message}`);
+  process.exit(1);
 });
