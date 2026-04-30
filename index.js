@@ -132,30 +132,79 @@ class ObscuraServer {
       // Wait for page to load
       await new Promise(r => setTimeout(r, 3000));
       
-      // Extract content
+      // Extract content using DOM protocol (more reliable than Runtime.evaluate with Obscura)
       let output = "";
       try {
-        if (dump === "text") {
-          const result = await session.send("Runtime.evaluate", {
-            expression: "document.body.innerText",
-            returnByValue: true
-          });
-          output = result.result.value || "";
-        } else if (dump === "links") {
-          const result = await session.send("Runtime.evaluate", {
-            expression: "Array.from(document.querySelectorAll('a'), a => a.href).join('\\n')",
-            returnByValue: true
-          });
-          output = result.result.value || "";
-        } else {
-          // HTML dump
-          const result = await session.send("DOM.getDocument", {});
-          const htmlResult = await session.send("DOM.getOuterHTML", { nodeId: result.root.nodeId });
-          output = htmlResult.outerHTML || "";
+        // Get the document
+        const docResult = await session.send("DOM.getDocument", {});
+        if (docResult?.root?.nodeId === undefined || docResult?.root?.nodeId === null) {
+          throw new Error("Failed to get document root");
         }
+        
+        const rootNodeId = docResult.root.nodeId;
+        
+        // Find the HTML element - skip DOCTYPE (nodeType 10)
+        let htmlNodeId = null;
+        if (docResult.root.children && docResult.root.children.length > 0) {
+          for (const child of docResult.root.children) {
+            // Skip DOCTYPE (nodeType 10) - we want the actual HTML element (nodeType 1)
+            if (child.nodeType !== 10 && child.nodeName.toLowerCase() === "html") {
+              htmlNodeId = child.nodeId;
+              break;
+            }
+          }
+        }
+        
+        if (htmlNodeId === null || htmlNodeId === undefined) {
+          htmlNodeId = rootNodeId; // Fallback to root
+        }
+        
+        // Get content based on dump type
+        if (dump === "html") {
+          // Get full HTML
+          const outerHTML = await session.send("DOM.getOuterHTML", { nodeId: htmlNodeId });
+          output = outerHTML?.outerHTML || "";
+        } else if (dump === "text") {
+          // Get all text by extracting from HTML and removing tags
+          const outerHTML = await session.send("DOM.getOuterHTML", { nodeId: htmlNodeId });
+          const html = outerHTML?.outerHTML || "";
+          // Remove script and style tags
+          let text = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+          text = text.replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
+          // Remove HTML tags
+          text = text.replace(/<[^>]+>/g, ' ');
+          // Decode HTML entities and normalize whitespace
+          text = text
+            .replace(/&nbsp;/g, ' ')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&amp;/g, '&')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/\s+/g, ' ')
+            .trim();
+          output = text;
+        } else if (dump === "links") {
+          // Find all anchor tags in HTML
+          const outerHTML = await session.send("DOM.getOuterHTML", { nodeId: htmlNodeId });
+          const html = outerHTML?.outerHTML || "";
+          // Extract href values
+          const linkRegex = /href=["']([^"']+)["']/gi;
+          let match;
+          const links = [];
+          while ((match = linkRegex.exec(html)) !== null) {
+            if (match[1]) {
+              links.push(match[1]);
+            }
+          }
+          // Remove duplicates
+          output = Array.from(new Set(links)).join("\n");
+        }
+      } catch (extractErr) {
+        output = ""; // Return empty on error - better than error message
       } finally {
-        // Close the session
-        await this.browser._connection.send("Target.closeTarget", { targetId });
+        // Always close the session
+        await this.browser._connection.send("Target.closeTarget", { targetId }).catch(() => {});
       }
       
       return output;
