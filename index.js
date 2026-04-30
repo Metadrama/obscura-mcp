@@ -14,7 +14,7 @@ const puppeteer = require("puppeteer-core");
 const http = require("http");
 
 // Configuration
-const OBSCURA_PATH = process.env.OBSCURA_PATH || "obscura";
+const OBSCURA_PATH = path.join(__dirname, 'bin', process.platform === 'win32' ? 'obscura.exe' : 'obscura');
 const MCP_HTTP_HOST = process.env.MCP_HTTP_HOST || "127.0.0.1";
 const MCP_HTTP_PORT = Number(process.env.MCP_HTTP_PORT || "3000");
 const MCP_HTTP_PATH = process.env.MCP_HTTP_PATH || "/mcp";

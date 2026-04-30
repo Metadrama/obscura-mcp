@@ -11,19 +11,23 @@ This project bridges that gap. It's a simple adapter that exposes Obscura's capa
 ## Prerequisites
 
 - **Node.js** (16.x or higher)
-- **Obscura CLI**: You must have the `obscura` binary installed and available in your system's PATH. You can download the latest release from the [official repository](https://github.com/h4ckf0r0day/obscura/releases).
 
 ## Installation
 
+This package automatically downloads and installs the required `obscura` browser binary for your platform.
+
 ```bash
-npm install -g @0bscura/mcp-server
+# Install the adapter AND the browser engine in one step
+npm install -g obscura-mcp
 ```
-Alternatively, you can clone this repository and run it locally:
+
+### Verification
+
+After installation, verify it was successful by running:
 ```bash
-git clone https://github.com/Metadrama/0bscura-mcp.git
-cd 0bscura-mcp
-npm install
+obscura --version
 ```
+You should see the installed version number printed.
 
 ## Configuration
 

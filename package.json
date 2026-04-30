@@ -5,9 +5,12 @@
   "main": "index.js",
   "scripts": {
     "test": "node -e \"console.log('No automated tests configured yet')\"",
-    "start": "node index.js",
-    "start:stdio": "node index.js --transport stdio",
-    "start:http": "node index.js --transport http"
+    "start": "node index.js --transport stdio",
+    "postinstall": "node scripts/install-obscura.js"
+  },
+  "bin": {
+    "obscura-mcp": "./index.js",
+    "obscura": "./bin/obscura"
   },
   "keywords": [
     "mcp",
@@ -32,9 +35,9 @@
   },
   "homepage": "https://github.com/Metadrama/0bscura-mcp#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0"
-  },
-  "optionalDependencies": {
-    "puppeteer-core": "^24.42.0"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "puppeteer-core": "^22.12.1",
+    "tar": "^7.1.1",
+    "yauzl": "^3.1.3"
   }
 }
