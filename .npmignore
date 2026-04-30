@@ -1,0 +1,14 @@
+# Development and test files
+test-*.js
+.vscode/
+*.tgz
+
+# Git and CI
+.git
+.gitignore
+.github
+
+# Development dependencies and logs
+node_modules
+npm-debug.log
+.npm
