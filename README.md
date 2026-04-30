@@ -1,51 +1,63 @@
 # obscura-mcp
 
-An MCP adapter for the Obscura web browsing tool.
+An MCP server adapter for [Obscura](https://github.com/h4ckf0r0day/obscura), the lightweight Rust headless browser for scraping and AI agent automation.
 
-## Why This Exists
-
-The original [obscura](https://github.com/h4ckf0r0day/obscura) engine is a powerful, lightweight, and stealthy headless browser designed for AI agents. However, it lacks a native Model Context Protocol (MCP) server.
-
-This project bridges that gap. It's a simple adapter that exposes Obscura's capabilities through an MCP server, allowing it to be used directly by MCP-native clients like Claude Code, Cursor, and VS Code.
+This package starts an Obscura CDP server and exposes a small, MCP-native tool surface. It intentionally uses Obscura's native protocol capabilities rather than bundling Chrome or falling back to heavyweight browser automation.
 
 ## Prerequisites
 
-- **Node.js** (16.x or higher)
+- Node.js 18 or newer
 
 ## Installation
 
-This package installs an `obscura` browser binary during `postinstall` when possible.
-
 ```bash
-# Install the adapter and let the browser engine bootstrap during postinstall
-npm install -g obscura-mcp
+npm install -g mcp-obscura
 ```
 
-### Verification
+The package downloads the pinned Obscura browser binary during `postinstall`. If you already have an Obscura binary, set `OBSCURA_PATH` in your MCP client configuration.
 
-After installation, verify the server starts by running:
+## Verification
+
+From this repository:
+
 ```bash
-npm start
+npm install --cache .npm-cache
+node test-mcp.js
 ```
-If you already have an Obscura binary installed elsewhere, point the server at it with `OBSCURA_PATH`.
 
-## Configuration
+After global install:
 
-Point your MCP client configuration to the installed server command or the local `index.js` file. Update the server name and path according to your setup.
-The server resolves Obscura in this order: `OBSCURA_PATH`, `./bin/obscura(.exe)`, then `obscura` on `PATH`.
+```bash
+obscura --help
+obscura-mcp --transport stdio
+```
 
-### VS Code (Stable or Insiders)
+`obscura-mcp --transport stdio` is a long-running MCP server process. Stop it with Ctrl+C after confirming it starts.
 
-Add to `.vscode/mcp.json` or your user-level MCP settings:
+## Codex Configuration
+
+Add this to `~/.codex/config.toml`, adjusting paths for your installation:
+
+```toml
+[mcp_servers.obscura-mcp]
+command = "node"
+args = ["C:\\Users\\mino\\tools\\mcp-obscura\\index.js", "--transport", "stdio"]
+env = { OBSCURA_PATH = "C:\\Users\\mino\\tools\\mcp-obscura\\bin\\obscura.exe", MCP_TRANSPORT = "stdio" }
+```
+
+For a global npm install, point `args` at the installed `index.js` or use the generated `obscura-mcp` command if your MCP client supports PATH lookup.
+
+## Other MCP Clients
+
+### VS Code
 
 ```json
 {
   "servers": {
     "obscura-mcp": {
       "command": "node",
-      "args": ["/path/to/obscura-mcp/index.js"],
+      "args": ["/path/to/mcp-obscura/index.js", "--transport", "stdio"],
       "env": {
-        "OBSCURA_PATH": "/usr/local/bin/obscura",
         "MCP_TRANSPORT": "stdio"
       }
     }
@@ -53,7 +65,7 @@ Add to `.vscode/mcp.json` or your user-level MCP settings:
 }
 ```
 
-### Claude Code (project-scoped `.mcp.json`)
+### Claude Code or Cursor
 
 ```json
 {
@@ -61,9 +73,8 @@ Add to `.vscode/mcp.json` or your user-level MCP settings:
     "obscura-mcp": {
       "type": "stdio",
       "command": "node",
-      "args": ["/path/to/obscura-mcp/index.js"],
+      "args": ["/path/to/mcp-obscura/index.js", "--transport", "stdio"],
       "env": {
-        "OBSCURA_PATH": "/usr/local/bin/obscura",
         "MCP_TRANSPORT": "stdio"
       }
     }
@@ -71,55 +82,21 @@ Add to `.vscode/mcp.json` or your user-level MCP settings:
 }
 ```
 
-### Cursor (`.cursor/mcp.json`)
+## Tools
 
-```json
-{
-  "mcpServers": {
-    "obscura-mcp": {
-      "command": "node",
-      "args": ["/path/to/obscura-mcp/index.js"],
-      "env": {
-        "OBSCURA_PATH": "/usr/local/bin/obscura",
-        "MCP_TRANSPORT": "stdio"
-      }
-    }
-  }
-}
-```
+### `browse_url`
 
-### Zed (`~/.config/zed/settings.json`)
+Fetches a URL using Obscura's lightweight CDP server.
 
-```json
-{
-  "context_servers": {
-    "obscura-mcp": {
-      "command": "node",
-      "args": ["/path/to/obscura-mcp/index.js"],
-      "env": {
-        "OBSCURA_PATH": "/usr/local/bin/obscura",
-        "MCP_TRANSPORT": "stdio"
-      }
-    }
-  }
-}
-```
+Parameters:
 
-## Tool Reference: `browse_url`
+- `url` (string, required): HTTP or HTTPS URL to visit.
+- `dump` (string, optional): `html`, `text`, or `links`. Defaults to `html`.
+- `stealth` (boolean, optional): Accepted for compatibility. Stealth behavior is controlled by the Obscura server binary.
 
-Fetches a URL using the Obscura engine.
+## Obscura Compatibility
 
-**Parameters:**
-- `url` (string, required): The URL to visit.
-- `dump` (string, optional): The output format. Can be "html", "text", or "links". Defaults to "html".
-- `stealth` (boolean, optional): Accepted for compatibility, but currently ignored by the adapter.
-
-
-
-## Related Projects
-
-- [obscura](https://github.com/h4ckf0r0day/obscura): The underlying headless browser engine.
-- [Model Context Protocol](https://modelcontextprotocol.io): The protocol specification.
+This adapter targets Obscura's implemented CDP subset. It does not assume every Puppeteer or Chrome DevTools Protocol method exists. Unsupported CDP features should fail clearly through MCP rather than hanging startup or silently returning empty output.
 
 ## License
 

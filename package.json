@@ -10,7 +10,7 @@
   },
   "bin": {
     "obscura-mcp": "./index.js",
-    "obscura": "./bin/obscura"
+    "obscura": "./scripts/obscura-bin.js"
   },
   "keywords": [
     "mcp",
@@ -24,7 +24,7 @@
   "license": "MIT",
   "type": "commonjs",
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   },
   "repository": {
     "type": "git",
@@ -36,8 +36,8 @@
   "homepage": "https://github.com/Metadrama/0bscura-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "puppeteer-core": "^22.12.1",
     "tar": "^7.1.1",
+    "ws": "^8.20.0",
     "yauzl": "^3.1.3"
   }
 }

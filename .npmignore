@@ -1,7 +1,14 @@
 # Development and test files
 test-*.js
+screenshot-google.js
 .vscode/
 *.tgz
+*.log
+*.png
+*.jpg
+*.jpeg
+google-screenshot.*
+server.*.log
 
 # Git and CI
 .git
@@ -12,3 +19,7 @@ test-*.js
 node_modules
 npm-debug.log
 .npm
+.npm-cache
+bin/
+dist/
+build/
