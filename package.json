@@ -9,8 +9,8 @@
     "postinstall": "node scripts/postinstall.js"
   },
   "bin": {
-    "obscura-mcp": "./index.js",
-    "obscura": "./scripts/obscura-bin.js"
+    "obscura-mcp": "index.js",
+    "obscura": "scripts/obscura-bin.js"
   },
   "keywords": [
     "mcp",
@@ -28,7 +28,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Metadrama/obscura-mcp"
+    "url": "git+https://github.com/Metadrama/obscura-mcp.git"
   },
   "bugs": {
     "url": "https://github.com/Metadrama/obscura-mcp/issues"
