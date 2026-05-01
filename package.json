@@ -1,0 +1,43 @@
+{
+  "name": "obscura-mcp",
+  "version": "0.1.0",
+  "description": "MCP server adapter for Obscura headless browser - high-performance web scraping with anti-detection",
+  "main": "index.js",
+  "scripts": {
+    "test": "node -e \"console.log('No automated tests configured yet')\"",
+    "start": "node index.js --transport stdio",
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "bin": {
+    "obscura-mcp": "./index.js",
+    "obscura": "./scripts/obscura-bin.js"
+  },
+  "keywords": [
+    "mcp",
+    "obscura",
+    "headless-browser",
+    "web-scraping",
+    "ai-agents",
+    "model-context-protocol"
+  ],
+  "author": "Metadrama",
+  "license": "MIT",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Metadrama/obscura-mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/Metadrama/obscura-mcp/issues"
+  },
+  "homepage": "https://github.com/Metadrama/obscura-mcp#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "tar": "^7.1.1",
+    "ws": "^8.20.0",
+    "yauzl": "^3.1.3"
+  }
+}

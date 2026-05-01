@@ -1,0 +1,25 @@
+# Development and test files
+test-*.js
+screenshot-google.js
+.vscode/
+*.tgz
+*.log
+*.png
+*.jpg
+*.jpeg
+google-screenshot.*
+server.*.log
+
+# Git and CI
+.git
+.gitignore
+.github
+
+# Development dependencies and logs
+node_modules
+npm-debug.log
+.npm
+.npm-cache
+bin/
+dist/
+build/
