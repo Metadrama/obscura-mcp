@@ -389,6 +389,16 @@ class ObscuraServer {
     });
   }
 
+  async pageToMarkdown(args = {}) {
+    const url = this.validateUrl(args.url);
+    const cookies = Array.isArray(args.cookies) ? args.cookies : [];
+
+    return await this.withPage(url, async (sessionId) => {
+      const result = await this.cdp.send("LP.getMarkdown", {}, sessionId);
+      return result?.markdown || "";
+    }, cookies);
+  }
+
   setupTools() {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
@@ -476,6 +486,43 @@ class ObscuraServer {
             required: ["url"],
           },
         },
+        {
+          name: "page_to_markdown",
+          description:
+            "Navigate to a URL and convert the page content to clean Markdown. Uses Obscura's LP.getMarkdown CDP method. Returns the full page as formatted markdown text.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The URL to visit" },
+              cookies: {
+                type: "array",
+                description:
+                  "Optional cookies to inject before navigation. An array of objects with at least name and value.",
+                items: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string" },
+                    value: { type: "string" },
+                    domain: { type: "string" },
+                    path: { type: "string" },
+                    secure: { type: "boolean" },
+                    httpOnly: { type: "boolean" },
+                    sameSite: { type: "string" },
+                    expires: { type: "number" },
+                  },
+                  required: ["name", "value"],
+                },
+              },
+              stealth: {
+                type: "boolean",
+                default: true,
+                description:
+                  "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
+              },
+            },
+            required: ["url"],
+          },
+        },
       ],
     }));
 
@@ -502,6 +549,13 @@ class ObscuraServer {
 
         if (name === "browse_cookies") {
           const output = await this.getCookies(args);
+          return {
+            content: [{ type: "text", text: output }],
+          };
+        }
+
+        if (name === "page_to_markdown") {
+          const output = await this.pageToMarkdown(args);
           return {
             content: [{ type: "text", text: output }],
           };

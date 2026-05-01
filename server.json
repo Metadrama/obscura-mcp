@@ -1,0 +1,39 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Metadrama/obscura-mcp",
+  "title": "Obscura MCP",
+  "description": "MCP server adapter for Obscura Rust headless browser — web scraping with anti-detection.",
+  "repository": {
+    "url": "https://github.com/Metadrama/obscura-mcp.git",
+    "source": "github"
+  },
+  "version": "0.1.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "obscura-mcp",
+      "version": "0.1.2",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "browse_url",
+      "description": "Fetch a URL using Obscura CDP engine. Returns HTML, text, or links."
+    },
+    {
+      "name": "browse_evaluate",
+      "description": "Navigate to a URL and execute JavaScript in the page context."
+    },
+    {
+      "name": "browse_cookies",
+      "description": "Navigate to a URL and retrieve all cookies set by the page."
+    },
+    {
+      "name": "page_to_markdown",
+      "description": "Navigate to a URL and convert page content to clean Markdown using Obscura's LP.getMarkdown."
+    }
+  ]
+}
