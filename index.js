@@ -102,6 +102,91 @@ function extractLinks(html, baseUrl) {
   return Array.from(new Set(links)).join("\n");
 }
 
+const SESSION_IDLE_TIMEOUT_MS = Number(
+  process.env.OBSCURA_SESSION_TIMEOUT_MS || "300000",
+);
+const SESSION_CLEANUP_INTERVAL_MS = Number(
+  process.env.OBSCURA_SESSION_CLEANUP_MS || "60000",
+);
+
+class SessionManager {
+  constructor(cdpClient) {
+    this.cdp = cdpClient;
+    this.sessions = new Map();
+    this.nextId = 1;
+    this._startCleanup();
+  }
+
+  _startCleanup() {
+    this._cleanupTimer = setInterval(() => {
+      this._cleanupStale();
+    }, SESSION_CLEANUP_INTERVAL_MS);
+  }
+
+  stop() {
+    if (this._cleanupTimer) {
+      clearInterval(this._cleanupTimer);
+      this._cleanupTimer = null;
+    }
+    for (const [id] of this.sessions) {
+      this.close(id).catch(() => {});
+    }
+  }
+
+  _cleanupStale() {
+    const now = Date.now();
+    for (const [id, sess] of this.sessions.entries()) {
+      if (now - sess.lastUsedAt > SESSION_IDLE_TIMEOUT_MS) {
+        this.close(id).catch(() => {});
+      }
+    }
+  }
+
+  async create(url) {
+    const target = await this.cdp.send("Target.createTarget", {
+      url: url || "about:blank",
+    });
+    const targetId = target.targetId;
+    if (!targetId) throw new Error("Failed to create target");
+
+    const attached = await this.cdp.send("Target.attachToTarget", {
+      targetId,
+      flatten: true,
+    });
+    const sessionId = attached.sessionId;
+    if (!sessionId) throw new Error("Failed to attach to target");
+
+    await this.cdp.send("Page.enable", {}, sessionId).catch(() => {});
+    await this.cdp.send("DOM.enable", {}, sessionId).catch(() => {});
+
+    const id = `session_${this.nextId++}`;
+    this.sessions.set(id, { id, targetId, sessionId, createdAt: Date.now(), lastUsedAt: Date.now() });
+    return id;
+  }
+
+  get(id) {
+    const sess = this.sessions.get(id);
+    if (!sess) throw new Error(`Session not found: ${id}`);
+    sess.lastUsedAt = Date.now();
+    return sess;
+  }
+
+  async close(id) {
+    const sess = this.sessions.get(id);
+    if (!sess) return;
+    this.sessions.delete(id);
+    await this.cdp.send("Target.closeTarget", { targetId: sess.targetId }).catch(() => {});
+  }
+
+  list() {
+    return Array.from(this.sessions.values()).map((s) => ({
+      id: s.id,
+      createdAt: new Date(s.createdAt).toISOString(),
+      lastUsedAt: new Date(s.lastUsedAt).toISOString(),
+    }));
+  }
+}
+
 class CdpClient {
   constructor(endpoint) {
     this.endpoint = endpoint;
@@ -200,6 +285,7 @@ class ObscuraServer {
   constructor() {
     this.obscuraProcess = null;
     this.cdp = null;
+    this.sessions = null;
     this.server = new Server(
       {
         name: "mcp-obscura",
@@ -234,13 +320,23 @@ class ObscuraServer {
     return parsed.toString();
   }
 
-  async withPage(url, callback, cookies) {
+  async withPage(url, callback, cookies, sessionId) {
     if (!this.cdp) {
       throw new Error("Obscura CDP client is not connected.");
     }
 
+    // Session mode: use existing session instead of creating a new target
+    if (sessionId) {
+      const sess = this.sessions.get(sessionId);
+      if (url) {
+        await this.cdp.send("Page.navigate", { url }, sess.sessionId);
+        await delay(OBSCURA_NAVIGATION_WAIT_MS);
+      }
+      return await callback(sess.sessionId, sess.targetId);
+    }
+
     let targetId;
-    let sessionId;
+    let sessId;
 
     try {
       const target = await this.cdp.send("Target.createTarget", {
@@ -255,13 +351,13 @@ class ObscuraServer {
         targetId,
         flatten: true,
       });
-      sessionId = attached.sessionId;
-      if (!sessionId) {
+      sessId = attached.sessionId;
+      if (!sessId) {
         throw new Error("Obscura did not return a CDP session id.");
       }
 
-      await this.cdp.send("Page.enable", {}, sessionId).catch(() => {});
-      await this.cdp.send("DOM.enable", {}, sessionId).catch(() => {});
+      await this.cdp.send("Page.enable", {}, sessId).catch(() => {});
+      await this.cdp.send("DOM.enable", {}, sessId).catch(() => {});
       if (cookies && cookies.length > 0) {
         // Strip leading dot from domain if present — Network.getCookies
         // returns domains with leading dot (e.g. ".example.com") but
@@ -281,13 +377,13 @@ class ObscuraServer {
           return copy;
         });
         await this.cdp
-          .send("Network.setCookies", { cookies: cleaned }, sessionId)
+          .send("Network.setCookies", { cookies: cleaned }, sessId)
           .catch(() => {});
       }
-      await this.cdp.send("Page.navigate", { url }, sessionId);
+      await this.cdp.send("Page.navigate", { url }, sessId);
       await delay(OBSCURA_NAVIGATION_WAIT_MS);
 
-      return await callback(sessionId, targetId);
+      return await callback(sessId, targetId);
     } finally {
       if (targetId && this.cdp) {
         await this.cdp
@@ -397,6 +493,200 @@ class ObscuraServer {
       const result = await this.cdp.send("LP.getMarkdown", {}, sessionId);
       return result?.markdown || "";
     }, cookies);
+  }
+
+  async browseClick(args = {}) {
+    const sessionId = args.session_id;
+    const selector = args.selector;
+    if (!selector || typeof selector !== "string") {
+      throw new Error("Invalid argument: selector is required");
+    }
+    // Session mode: URL is optional
+    // One-shot mode: URL required
+    const url = sessionId ? (args.url || null) : this.validateUrl(args.url);
+
+    return await this.withPage(url, async (sessId) => {
+      // Get element position via JS
+      const rectResult = await this.cdp.send(
+        "Runtime.evaluate",
+        {
+          expression: `JSON.stringify((() => {
+            const el = document.querySelector(${JSON.stringify(selector)});
+            if (!el) return { error: "Element not found" };
+            const r = el.getBoundingClientRect();
+            return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+          })())`,
+        },
+        sessId,
+      );
+
+      const raw = rectResult?.result?.value;
+      if (!raw) {
+        throw new Error("Failed to locate element");
+      }
+
+      let rect;
+      try { rect = JSON.parse(raw); } catch {}
+      if (!rect || rect.error) {
+        throw new Error(rect?.error || "Failed to locate element");
+      }
+
+      // Dispatch mouse click
+      await this.cdp.send(
+        "Input.dispatchMouseEvent",
+        { type: "mousePressed", x: rect.x, y: rect.y, button: "left", clickCount: 1 },
+        sessId,
+      );
+
+      await this.cdp.send(
+        "Input.dispatchMouseEvent",
+        { type: "mouseReleased", x: rect.x, y: rect.y, button: "left", clickCount: 1 },
+        sessId,
+      );
+
+      return `Clicked "${selector}" at (${Math.round(rect.x)}, ${Math.round(rect.y)})`;
+    }, null, sessionId);
+  }
+
+  async browseType(args = {}) {
+    const sessionId = args.session_id;
+    const selector = args.selector;
+    if (!selector || typeof selector !== "string") {
+      throw new Error("Invalid argument: selector is required");
+    }
+    const text = args.text;
+    if (typeof text !== "string" || text.length === 0) {
+      throw new Error("Invalid argument: text is required");
+    }
+    const url = sessionId ? (args.url || null) : this.validateUrl(args.url);
+
+    return await this.withPage(url, async (sessId) => {
+      // Focus the element first
+      const focusResult = await this.cdp.send(
+        "Runtime.evaluate",
+        {
+          expression: `JSON.stringify((() => {
+            const el = document.querySelector(${JSON.stringify(selector)});
+            if (!el) return { error: "Element not found" };
+            el.focus();
+            el.value = "";
+            return { focused: true };
+          })())`,
+        },
+        sessId,
+      );
+
+      const focusRaw = focusResult?.result?.value;
+      if (!focusRaw) {
+        throw new Error("Failed to focus element");
+      }
+
+      let focusVal;
+      try { focusVal = JSON.parse(focusRaw); } catch {}
+      if (!focusVal || focusVal.error) {
+        throw new Error(focusVal?.error || "Failed to focus element");
+      }
+
+      // Dispatch key events for each character
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        const keyCode = char.charCodeAt(0);
+
+        await this.cdp.send(
+          "Input.dispatchKeyEvent",
+          {
+            type: "rawKeyDown",
+            windowsVirtualKeyCode: keyCode,
+            key: char,
+            code: `Key${char.toUpperCase()}`,
+            text: char,
+          },
+          sessId,
+        );
+
+        await this.cdp.send(
+          "Input.dispatchKeyEvent",
+          { type: "char", text: char, key: char, windowsVirtualKeyCode: keyCode },
+          sessId,
+        );
+
+        await this.cdp.send(
+          "Input.dispatchKeyEvent",
+          { type: "keyUp", windowsVirtualKeyCode: keyCode, key: char, code: `Key${char.toUpperCase()}` },
+          sessId,
+        );
+      }
+
+      return `Typed "${text}" into "${selector}" (${text.length} characters)`;
+    }, null, sessionId);
+  }
+
+  async sessionCreate(args = {}) {
+    const url = args.url ? this.validateUrl(args.url) : null;
+    const id = await this.sessions.create(url);
+    return `Created session: ${id}`;
+  }
+
+  async sessionClose(args = {}) {
+    const id = args.session_id;
+    if (!id) throw new Error("Invalid argument: session_id is required");
+    await this.sessions.close(id);
+    return `Closed session: ${id}`;
+  }
+
+  async sessionList() {
+    const list = this.sessions.list();
+    if (list.length === 0) return "No active sessions.";
+    return list.map((s) => `  ${s.id} (created: ${s.createdAt}, last used: ${s.lastUsedAt})`).join("\n");
+  }
+
+  async browseGoto(args = {}) {
+    const id = args.session_id;
+    if (!id) throw new Error("Invalid argument: session_id is required");
+    const url = this.validateUrl(args.url);
+    const sess = this.sessions.get(id);
+    await this.cdp.send("Page.navigate", { url }, sess.sessionId);
+    await delay(OBSCURA_NAVIGATION_WAIT_MS);
+    return `Navigated to ${url}`;
+  }
+
+  async browseWait(args = {}) {
+    const id = args.session_id;
+    if (!id) throw new Error("Invalid argument: session_id is required");
+    const selector = args.selector;
+    const expression = args.expression;
+    const timeoutMs = Math.min(Math.max(1000, Number(args.timeout) || 30000), 120000);
+    const sess = this.sessions.get(id);
+
+    const condition = selector
+      ? `document.querySelector(${JSON.stringify(selector)}) !== null`
+      : expression;
+
+    if (!condition) throw new Error("Invalid argument: selector or expression is required");
+
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const result = await this.cdp.send("Runtime.evaluate", { expression: condition }, sess.sessionId);
+      if (result?.result?.value === true || result?.result?.value === "true") {
+        return `Condition met after ${Date.now() - start}ms`;
+      }
+      await delay(500);
+    }
+    throw new Error(`Timeout after ${timeoutMs}ms waiting for condition`);
+  }
+
+  async browseExtract(args = {}) {
+    const id = args.session_id;
+    if (!id) throw new Error("Invalid argument: session_id is required");
+    const expression = args.expression;
+    if (!expression || typeof expression !== "string") throw new Error("Invalid argument: expression is required");
+    const sess = this.sessions.get(id);
+    const result = await this.cdp.send("Runtime.evaluate", { expression }, sess.sessionId);
+    if (result.exceptionDetails) {
+      throw new Error(`JS exception: ${result.exceptionDetails.text || JSON.stringify(result.exceptionDetails)}`);
+    }
+    const value = result.result?.value ?? result.result?.description ?? JSON.stringify(result.result);
+    return typeof value === "string" ? value : JSON.stringify(value);
   }
 
   setupTools() {
@@ -523,6 +813,166 @@ class ObscuraServer {
             required: ["url"],
           },
         },
+        {
+          name: "browse_click",
+          description:
+            "Navigate to a URL and click on an element identified by a CSS selector. Uses Input.dispatchMouseEvent CDP. Returns the coordinates where the click was dispatched.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The URL to visit (optional if session_id is provided)" },
+              session_id: {
+                type: "string",
+                description: "Optional session ID for persistent browsing. If provided, the click is performed on the existing session page instead of creating a new one.",
+              },
+              selector: {
+                type: "string",
+                description:
+                  "CSS selector for the element to click (e.g. 'a', '#submit', 'button.primary')",
+              },
+              stealth: {
+                type: "boolean",
+                default: true,
+                description:
+                  "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
+              },
+            },
+            required: ["selector"],
+          },
+        },
+        {
+          name: "browse_type",
+          description:
+            "Navigate to a URL, focus an element, and type text into it. Uses Input.dispatchKeyEvent CDP. Returns what was typed and where.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              url: { type: "string", description: "The URL to visit (optional if session_id is provided)" },
+              session_id: {
+                type: "string",
+                description: "Optional session ID for persistent browsing. If provided, the typing is performed on the existing session page instead of creating a new one.",
+              },
+              selector: {
+                type: "string",
+                description:
+                  "CSS selector for the input element to type into (e.g. '#username', 'input[name=\"q\"]')",
+              },
+              text: {
+                type: "string",
+                description: "The text to type into the element",
+              },
+              stealth: {
+                type: "boolean",
+                default: true,
+                description:
+                  "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
+              },
+            },
+            required: ["selector", "text"],
+          },
+        },
+        {
+          name: "session_create",
+          description:
+            "Create a new persistent browsing session. Returns a session ID that can be used with other session-aware tools. The session keeps a page open until explicitly closed or after 5 minutes of inactivity.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              url: {
+                type: "string",
+                description: "Optional URL to navigate to immediately on session creation",
+              },
+            },
+          },
+        },
+        {
+          name: "session_close",
+          description:
+            "Close a persistent browsing session and release its resources.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_id: {
+                type: "string",
+                description: "The session ID to close",
+              },
+            },
+            required: ["session_id"],
+          },
+        },
+        {
+          name: "session_list",
+          description:
+            "List all active persistent browsing sessions with their creation and last-used timestamps.",
+          inputSchema: {
+            type: "object",
+            properties: {},
+          },
+        },
+        {
+          name: "browse_goto",
+          description:
+            "Navigate an existing session to a new URL. The session's page remains alive after navigation.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_id: {
+                type: "string",
+                description: "The session ID to navigate",
+              },
+              url: { type: "string", description: "The URL to navigate to" },
+            },
+            required: ["session_id", "url"],
+          },
+        },
+        {
+          name: "browse_wait",
+          description:
+            "Wait for a condition in an existing session. Can wait for a CSS selector to appear or a JavaScript expression to return true. Useful for waiting for 2FA prompts, redirects, or dynamic content.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_id: {
+                type: "string",
+                description: "The session ID",
+              },
+              selector: {
+                type: "string",
+                description: "CSS selector to wait for (e.g. '.otp-input', '#2fa-form')",
+              },
+              expression: {
+                type: "string",
+                description: "JavaScript expression that should return true (alternative to selector)",
+              },
+              timeout: {
+                type: "number",
+                default: 30000,
+                description: "Maximum wait time in milliseconds (1000-120000, default 30000)",
+              },
+            },
+            required: ["session_id"],
+          },
+        },
+        {
+          name: "browse_extract",
+          description:
+            "Execute a JavaScript expression in an existing session and return the result. Useful for reading page state, extracting data, or checking conditions after navigation.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              session_id: {
+                type: "string",
+                description: "The session ID",
+              },
+              expression: {
+                type: "string",
+                description:
+                  "JavaScript expression to evaluate. Examples: 'document.title', 'document.querySelector(\".balance\").textContent'",
+              },
+            },
+            required: ["session_id", "expression"],
+          },
+        },
       ],
     }));
 
@@ -556,6 +1006,62 @@ class ObscuraServer {
 
         if (name === "page_to_markdown") {
           const output = await this.pageToMarkdown(args);
+          return {
+            content: [{ type: "text", text: output }],
+          };
+        }
+
+        if (name === "browse_click") {
+          const output = await this.browseClick(args);
+          return {
+            content: [{ type: "text", text: output }],
+          };
+        }
+
+        if (name === "browse_type") {
+          const output = await this.browseType(args);
+          return {
+            content: [{ type: "text", text: output }],
+          };
+        }
+
+        if (name === "session_create") {
+          const output = await this.sessionCreate(args);
+          return {
+            content: [{ type: "text", text: output }],
+          };
+        }
+
+        if (name === "session_close") {
+          const output = await this.sessionClose(args);
+          return {
+            content: [{ type: "text", text: output }],
+          };
+        }
+
+        if (name === "session_list") {
+          const output = await this.sessionList();
+          return {
+            content: [{ type: "text", text: output }],
+          };
+        }
+
+        if (name === "browse_goto") {
+          const output = await this.browseGoto(args);
+          return {
+            content: [{ type: "text", text: output }],
+          };
+        }
+
+        if (name === "browse_wait") {
+          const output = await this.browseWait(args);
+          return {
+            content: [{ type: "text", text: output }],
+          };
+        }
+
+        if (name === "browse_extract") {
+          const output = await this.browseExtract(args);
           return {
             content: [{ type: "text", text: output }],
           };
@@ -715,6 +1221,7 @@ class ObscuraServer {
           this.cdp = new CdpClient(match[1]);
           await this.cdp.connect();
           console.error(`Connected to Obscura CDP at ${match[1]}`);
+          this.sessions = new SessionManager(this.cdp);
           succeed();
         } catch (error) {
           fail(new Error(`Failed to connect to Obscura CDP: ${error.message}`));
@@ -759,6 +1266,10 @@ class ObscuraServer {
   }
 
   async stopObscuraService() {
+    if (this.sessions) {
+      this.sessions.stop();
+      this.sessions = null;
+    }
     if (this.cdp) {
       this.cdp.close();
       this.cdp = null;
