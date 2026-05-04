@@ -3,12 +3,12 @@
   "maintainers": ["metadrama"],
   "sourceUrl": "https://github.com/Metadrama/obscura-mcp.git",
   "source": "github",
-  "version": "0.1.3",
+  "version": "0.1.4-1",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "obscura-mcp",
-      "version": "0.1.3",
+      "version": "0.1.4-1",
       "transport": {
         "type": "stdio"
       }
