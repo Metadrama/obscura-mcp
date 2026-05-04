@@ -35,81 +35,177 @@ obscura-mcp --transport stdio
 obscura-mcp --transport streamable-http
 ```
 
-## Tools — 12 total
+## Tools
 
-### One-shot tools
+Four tools cover the full browser automation surface — from one-shot page reading to parallel bulk scraping.
 
-Navigate, extract, click, and type — each call opens a page, performs the action, and closes. No session management needed.
+### `browse_page` — one-shot page reading
 
-| Tool | Description |
-|------|-------------|
-| `browse_url` | Fetch a URL and return content as `html`, `text`, or `links`. Supports cookie injection for authenticated pages. |
-| `browse_evaluate` | Navigate to a URL and execute JavaScript. Returns the evaluated result. |
-| `browse_cookies` | Navigate to a URL and retrieve all cookies set by the page. |
-| `page_to_markdown` | Navigate to a URL and convert the page content to clean markdown. |
-| `browse_click` | Click an element by CSS selector. Works one-shot (pass `url`) or within a session (pass `session_id`). |
-| `browse_type` | Type text into an input by CSS selector. Works one-shot (pass `url`) or within a session (pass `session_id`). |
+Get content from any page in a single call. Combine output format with optional JavaScript evaluation.
 
-### Session tools
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `url` | `string` | — | The URL to visit |
+| `format` | `"text"` \| `"markdown"` \| `"html"` \| `"links"` \| `"cookies"` | `"text"` | Output format |
+| `eval` | `string` | — | JavaScript expression to evaluate (appended to output) |
+| `cookies` | `array` | — | Cookies to inject `[{name, value, domain?, path?, ...}]` |
 
-Create, manage, and interact with persistent browser sessions. Perfect for multi-step flows: login → wait for 2FA → navigate → extract data.
-
-| Tool | Description |
-|------|-------------|
-| `session_create` | Create a persistent browsing session. Returns a session ID. Optionally navigate to a URL immediately. |
-| `session_close` | Close a session and release its resources. Idempotent — safe to call multiple times. |
-| `session_list` | List all active sessions with creation and last-used timestamps. |
-| `browse_goto` | Navigate an existing session to a new URL. The page remains alive after navigation. |
-| `browse_wait` | Wait for a condition — CSS selector to appear, or JavaScript expression to return true. Configurable timeout. |
-| `browse_extract` | Execute JavaScript in a session and return the result. Read page state after navigation. |
-
-### Session usage pattern
+**Examples:**
 
 ```
-1. session_create(url?)      → session_xxx
-2. browse_goto(session_id, url)  → navigate
-3. browse_extract(session_id, expression) → read page state
-   browse_click(session_id, selector) → interact
-   browse_type(session_id, selector, text) → fill forms
-4. browse_wait(session_id, selector/expression, timeout?) → wait for things to load
-5. browse_extract(session_id, expression) → read new state
-6. session_close(session_id) → cleanup
+browse_page(url: "https://example.com")
+browse_page(url: "https://example.com", format: "markdown")
+browse_page(url: "https://news.ycombinator.com", format: "links")
+browse_page(url: "https://example.com", format: "cookies")
+browse_page(url: "https://example.com", eval: "document.title")
+browse_page(url: "https://example.com", format: "markdown", eval: "document.title")
 ```
 
-Sessions auto-close after 5 minutes of inactivity. Multiple sessions can run simultaneously.
+| `format` | What you get |
+|----------|-------------|
+| `"text"` | Plain text — stripped of HTML tags, scripts, styles |
+| `"markdown"` | Clean markdown — uses Obscura's native LP.getMarkdown CDP |
+| `"html"` | Raw HTML markup |
+| `"links"` | All href values — one per line |
+| `"cookies"` | Cookies with name, value, domain, path, expiry |
 
-### Examples
+When `eval` is provided, the JavaScript result is appended to the format output under a `--- eval ---` divider.
 
-**One-shot: get page text**
+---
+
+### `browse_interact` — one-shot page actions
+
+Click an element or type text into a page. One call, no session management needed. For multi-step interactions (login → wait → extract), use `browse_session` instead.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `url` | `string` | — | The URL to visit |
+| `action` | `"click"` \| `"type"` | — | Action to perform |
+| `selector` | `string` | — | CSS selector for the target element |
+| `text` | `string` | — | Text to type (required when `action` is `"type"`) |
+| `cookies` | `array` | — | Cookies to inject `[{name, value, ...}]` |
+
+**Examples:**
+
 ```
-browse_url(url: "https://example.com", dump: "text")
+browse_interact(url: "https://example.com", action: "click", selector: "a")
+browse_interact(url: "https://duckduckgo.com", action: "type", selector: "input[name=q]", text: "search query")
 ```
 
-**One-shot: click a link**
+Both actions create a fresh page, perform the action, and close. The page context does not persist — for sequential interactions (type into a form, then click submit), use `browse_session` instead.
+
+---
+
+### `browse_session` — multi-step persistent sessions
+
+Create a persistent browser session, interact with it across multiple calls, then close. Sessions auto-close after 5 minutes of inactivity. Multiple sessions can run simultaneously.
+
+| Parameter | Type | Required for | Description |
+|-----------|------|-------------|-------------|
+| `action` | `"create"` \| `"close"` \| `"list"` \| `"goto"` \| `"wait"` \| `"extract"` \| `"click"` \| `"type"` | All | What to do |
+| `session_id` | `string` | All except `create`, `list` | Session ID from `create` |
+| `url` | `string` | `create`, `goto` | URL to navigate to |
+| `selector` | `string` | `wait`, `click`, `type` | CSS selector |
+| `expression` | `string` | `wait` (if no selector), `extract` | JavaScript expression |
+| `text` | `string` | `type` | Text to type |
+| `timeout` | `number` | `wait` (optional) | Max wait in ms (default 30000, max 120000) |
+
+**Session lifecycle:**
+
+| `action` | What it does | Returns |
+|----------|-------------|---------|
+| `create` | Opens a new browser tab. Optionally navigates to a URL. | Session ID |
+| `close` | Releases the tab and all its resources. Idempotent. | Confirmation |
+| `list` | Shows all active sessions with timestamps. | Session list |
+| `goto` | Navigates to a new URL. Page stays alive. | Confirmation |
+| `wait` | Polls until a CSS selector exists or a JS expression returns true. | Confirmation |
+| `extract` | Evaluates JavaScript and returns the result. | Eval result |
+| `click` | Clicks an element by CSS selector. | Coordinates |
+| `type` | Types text into an input field. | Confirmation |
+
+**Login flow example:**
+
 ```
-browse_click(url: "https://example.com", selector: "a")
+browse_session(action: "create", url: "https://example.com/login")
+  → "Created session: session_1"
+
+browse_session(action: "type", session_id: "session_1", selector: "#username", text: "user")
+browse_session(action: "type", session_id: "session_1", selector: "#password", text: "pass")
+browse_session(action: "click", session_id: "session_1", selector: "#login-btn")
+
+browse_session(action: "wait", session_id: "session_1", selector: ".dashboard", timeout: 10000)
+browse_session(action: "extract", session_id: "session_1", expression: "document.title")
+
+browse_session(action: "close", session_id: "session_1")
 ```
 
-**Session: login flow**
+**Multi-article browsing example:**
+
 ```
-session_create(url: "https://example.com/login")
-browse_type(session_id, selector: "#username", text: "user")
-browse_type(session_id, selector: "#password", text: "pass")
-browse_click(session_id, selector: "#login-btn")
-browse_wait(session_id, selector: ".dashboard")
-browse_extract(session_id, expression: "document.title")
-session_close(session_id)
+browse_session(action: "create")
+browse_session(action: "goto", session_id: "session_1", url: "https://en.wikipedia.org/wiki/JavaScript")
+browse_session(action: "extract", session_id: "session_1", expression: "document.title")
+browse_session(action: "goto", session_id: "session_1", url: "https://en.wikipedia.org/wiki/Python")
+browse_session(action: "extract", session_id: "session_1", expression: "document.title")
+browse_session(action: "close", session_id: "session_1")
 ```
 
-**Session: browse multiple articles**
+---
+
+### `browse_scrape` — parallel bulk scraping
+
+Scrape multiple URLs simultaneously using isolated worker processes. Each URL gets its own headless browser worker — built on top of Obscura's native `scrape` command with `obscura-worker`.
+
+| Parameter | Type | Default | Max | Description |
+|-----------|------|---------|-----|-------------|
+| `urls` | `string[]` | — | 1000 | URLs to scrape in parallel |
+| `eval` | `string` | — | — | JavaScript expression to evaluate per page |
+| `concurrency` | `number` | `10` | `100` | Number of parallel worker processes |
+| `timeout` | `number` | `60` | `300` | Per-worker timeout in seconds |
+
+**Example:**
+
 ```
-session_create()
-browse_goto(session_id, url: "https://en.wikipedia.org/wiki/JavaScript")
-browse_extract(session_id, expression: "document.title")
-browse_goto(session_id, url: "https://en.wikipedia.org/wiki/Python")
-browse_extract(session_id, expression: "document.title")
-session_close(session_id)
+browse_scrape(urls: ["https://news.ycombinator.com", "https://example.com"], eval: "document.title", concurrency: 25)
 ```
+
+**Output format (JSON):**
+
+```json
+{
+  "total_urls": 2,
+  "concurrency": 25,
+  "total_time_ms": 1250,
+  "avg_time_ms": 625.0,
+  "results": [
+    {
+      "url": "https://news.ycombinator.com",
+      "title": "Hacker News",
+      "eval": "Hacker News",
+      "time_ms": 612,
+      "worker": 0
+    },
+    {
+      "url": "https://example.com",
+      "eval": "Example Domain",
+      "time_ms": 638,
+      "worker": 1
+    }
+  ]
+}
+```
+
+On errors (timeout, network failure, etc.), the per-URL result includes an `"error"` field instead of `"eval"`:
+
+```json
+{
+  "url": "https://slow-site.com",
+  "error": "timeout",
+  "time_ms": 60000
+}
+```
+
+This is the tool that directly leverages Obscura's core advantage over headless Chrome: lightweight parallel scraping with built-in stealth. The 30 MB per-worker memory footprint means 100 concurrent workers use less memory than a single Chrome instance.
 
 ## Configuration
 

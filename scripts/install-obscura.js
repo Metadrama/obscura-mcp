@@ -29,7 +29,7 @@ const { promisify } = require("util");
 
 const streamPipeline = promisify(pipeline);
 
-const OBSCURA_VERSION = "v0.1.1";
+const OBSCURA_VERSION = "v0.1.2";
 const BASE_URL = `https://github.com/h4ckf0r0day/obscura/releases/download/${OBSCURA_VERSION}`;
 
 function cacheDir() {
@@ -53,6 +53,10 @@ function expectedBinaryName() {
   return process.platform === "win32" ? "obscura.exe" : "obscura";
 }
 
+function expectedWorkerName() {
+  return process.platform === "win32" ? "obscura-worker.exe" : "obscura-worker";
+}
+
 function say(line) {
   process.stderr.write(line + "\n");
 }
@@ -67,26 +71,32 @@ function ensureLocalLink(cachePath, localPath) {
 
 async function ensureBinary() {
   const binaryName = expectedBinaryName();
+  const workerName = expectedWorkerName();
   const localPath = path.join(localBinDir(), binaryName);
+  const localWorkerPath = path.join(localBinDir(), workerName);
   const cachePath = path.join(cacheDir(), binaryName);
+  const cacheWorkerPath = path.join(cacheDir(), workerName);
   const platform = getPlatformInfo();
 
-  // 1. Check local bin/
-  if (fs.existsSync(localPath)) {
+  // 1. Check local bin/ — both binaries
+  if (fs.existsSync(localPath) && fs.existsSync(localWorkerPath)) {
     const stat = fs.statSync(localPath);
-    if (stat.isFile() && stat.size > 0) return localPath;
+    const wStat = fs.statSync(localWorkerPath);
+    if (stat.isFile() && stat.size > 0 && wStat.isFile() && wStat.size > 0) return localPath;
   }
 
   // 2. Check persistent cache ~/.obscura/bin/
-  if (fs.existsSync(cachePath)) {
+  if (fs.existsSync(cachePath) && fs.existsSync(cacheWorkerPath)) {
     const stat = fs.statSync(cachePath);
-    if (stat.isFile() && stat.size > 0) {
+    const wStat = fs.statSync(cacheWorkerPath);
+    if (stat.isFile() && stat.size > 0 && wStat.isFile() && wStat.size > 0) {
       ensureLocalLink(cachePath, localPath);
+      ensureLocalLink(cacheWorkerPath, localWorkerPath);
       return localPath;
     }
   }
 
-  // 3. Cache miss — download to cache, then link to local
+  // 3. Cache miss — download archive, extract both, cache both
   const isWindows = platform.includes("windows");
   const archiveType = isWindows ? ".zip" : ".tar.gz";
   const url = `${BASE_URL}/obscura-${platform}${archiveType}`;
@@ -99,11 +109,62 @@ async function ensureBinary() {
   try {
     fs.mkdirSync(cacheDir(), { recursive: true });
     await download(url, archivePath);
+
+    // Extract both binaries from the same archive
     const extracted = await extract(archivePath, cacheDir(), binaryName);
+    const extractedWorker = await extract(archivePath, cacheDir(), workerName);
+
     validateBinary(extracted);
+    validateBinary(extractedWorker);
+
     ensureLocalLink(extracted, localPath);
-    say(`Obscura binary installed at ${localPath}`);
+    ensureLocalLink(extractedWorker, localWorkerPath);
+
+    say(`Obscura binaries installed at ${localBinDir()}`);
     return localPath;
+  } finally {
+    if (fs.existsSync(archivePath)) fs.rmSync(archivePath, { force: true });
+  }
+}
+
+async function ensureWorker() {
+  const workerName = expectedWorkerName();
+  const localWorkerPath = path.join(localBinDir(), workerName);
+  const cacheWorkerPath = path.join(cacheDir(), workerName);
+  const platform = getPlatformInfo();
+
+  // Check local
+  if (fs.existsSync(localWorkerPath)) {
+    const stat = fs.statSync(localWorkerPath);
+    if (stat.isFile() && stat.size > 0) return localWorkerPath;
+  }
+
+  // Check cache
+  if (fs.existsSync(cacheWorkerPath)) {
+    const stat = fs.statSync(cacheWorkerPath);
+    if (stat.isFile() && stat.size > 0) {
+      ensureLocalLink(cacheWorkerPath, localWorkerPath);
+      return localWorkerPath;
+    }
+  }
+
+  // Download and extract — same archive as main binary
+  const isWindows = platform.includes("windows");
+  const archiveType = isWindows ? ".zip" : ".tar.gz";
+  const url = `${BASE_URL}/obscura-${platform}${archiveType}`;
+  const archivePath = path.join(os.tmpdir(), `obscura-archive${archiveType}`);
+
+  say("Downloading Obscura worker binary...");
+  fs.mkdirSync(cacheDir(), { recursive: true });
+  if (fs.existsSync(archivePath)) fs.rmSync(archivePath, { force: true });
+
+  try {
+    await download(url, archivePath);
+    const extracted = await extract(archivePath, cacheDir(), workerName);
+    validateBinary(extracted);
+    ensureLocalLink(extracted, localWorkerPath);
+    say(`Obscura worker installed at ${localWorkerPath}`);
+    return localWorkerPath;
   } finally {
     if (fs.existsSync(archivePath)) fs.rmSync(archivePath, { force: true });
   }
@@ -244,4 +305,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { ensureBinary, expectedBinaryName };
+module.exports = { ensureBinary, ensureWorker, expectedBinaryName };

@@ -16,7 +16,7 @@ const fs = require("fs");
 const http = require("http");
 const path = require("path");
 const WebSocket = require("ws");
-const { ensureBinary, expectedBinaryName } = require("./scripts/install-obscura.js");
+const { ensureBinary, ensureWorker, expectedBinaryName } = require("./scripts/install-obscura.js");
 
 const MCP_HTTP_HOST = process.env.MCP_HTTP_HOST || "127.0.0.1";
 const MCP_HTTP_PORT = Number(process.env.MCP_HTTP_PORT || "3000");
@@ -689,27 +689,172 @@ class ObscuraServer {
     return typeof value === "string" ? value : JSON.stringify(value);
   }
 
+  async browsePage(args = {}) {
+    const url = this.validateUrl(args.url);
+    const format = args.format || "text";
+    const evalExpr = args.eval;
+    const cookies = Array.isArray(args.cookies) ? args.cookies : [];
+
+    return await this.withPage(url, async (sessionId) => {
+      let output = "";
+
+      if (format === "markdown") {
+        const result = await this.cdp.send("LP.getMarkdown", {}, sessionId);
+        output = result?.markdown || "";
+      } else if (format === "html") {
+        output = await this.getOuterHtml(sessionId);
+      } else if (format === "links") {
+        const html = await this.getOuterHtml(sessionId);
+        output = extractLinks(html, url);
+      } else if (format === "cookies") {
+        await this.cdp.send("Network.enable", {}, sessionId).catch(() => {});
+        const result = await this.cdp.send("Network.getCookies", {}, sessionId);
+        const pageCookies = result.cookies || [];
+        if (pageCookies.length === 0) {
+          output = "No cookies found for this page.";
+        } else {
+          output = pageCookies
+            .map(
+              (c) =>
+                `${c.name}=${c.value} (domain: ${c.domain}, path: ${c.path}${c.expires && c.expires > 0 ? `, expires: ${new Date(c.expires * 1000).toISOString()}` : ", session"})`,
+            )
+            .join("\n");
+        }
+      } else {
+        const html = await this.getOuterHtml(sessionId);
+        output = stripHtml(html);
+      }
+
+      if (evalExpr) {
+        const result = await this.cdp.send("Runtime.evaluate", { expression: evalExpr }, sessionId);
+        let evalOutput;
+        if (result.exceptionDetails) {
+          const detail = result.exceptionDetails.exception || result.exceptionDetails;
+          evalOutput = `JS Error: ${detail.description || detail.text || JSON.stringify(detail)}`;
+        } else {
+          const value = result.result?.value ?? result.result?.description ?? JSON.stringify(result.result);
+          evalOutput = typeof value === "string" ? value : JSON.stringify(value);
+        }
+        if (output) {
+          output = `${output}\n\n--- eval ---\n${evalOutput}`;
+        } else {
+          output = evalOutput;
+        }
+      }
+
+      return output;
+    }, cookies);
+  }
+
+  async browseInteract(args = {}) {
+    const action = args.action;
+    if (action === "click") {
+      return this.browseClick(args);
+    }
+    if (action === "type") {
+      return this.browseType(args);
+    }
+    throw new Error(`Unknown interact action: ${action}`);
+  }
+
+  async browseSession(args = {}) {
+    const action = args.action;
+    if (!action) throw new Error("Session action is required");
+
+    if (action === "create") {
+      return this.sessionCreate(args);
+    }
+    if (action === "close") {
+      return this.sessionClose(args);
+    }
+    if (action === "list") {
+      return this.sessionList();
+    }
+    if (action === "goto") {
+      return this.browseGoto(args);
+    }
+    if (action === "wait") {
+      return this.browseWait(args);
+    }
+    if (action === "extract") {
+      return this.browseExtract(args);
+    }
+    if (action === "click") {
+      return this.browseClick(args);
+    }
+    if (action === "type") {
+      return this.browseType(args);
+    }
+    throw new Error(`Unknown session action: ${action}`);
+  }
+
+  async browseScrape(args = {}) {
+    const urls = args.urls;
+    if (!Array.isArray(urls) || urls.length === 0) {
+      throw new Error("urls array is required");
+    }
+    if (urls.length > 1000) {
+      throw new Error("Maximum 1000 URLs per scrape call");
+    }
+
+    const evalExpr = args.eval;
+    const concurrency = Math.min(Math.max(1, Number(args.concurrency) || 10), 100);
+    const timeout = Math.min(Math.max(1, Number(args.timeout) || 60), 300);
+
+    // Ensure binaries — worker is needed for scrape
+    await ensureWorker();
+
+    const obscuraPath = resolveObscuraPath();
+    const binDir = path.dirname(obscuraPath);
+
+    // Build args
+    const procArgs = ["scrape", ...urls];
+    if (evalExpr) procArgs.push("--eval", evalExpr);
+    procArgs.push("--concurrency", String(concurrency));
+    procArgs.push("--timeout", String(timeout));
+    procArgs.push("--format", "json");
+    if (process.env.OBSCURA_VERBOSE) procArgs.push("--verbose");
+
+    return new Promise((resolve, reject) => {
+      const proc = spawn(obscuraPath, procArgs, { cwd: binDir });
+      let stdout = "";
+      let stderr = "";
+      proc.stdout.on("data", (d) => { stdout += d; });
+      proc.stderr.on("data", (d) => { stderr += d; });
+      proc.on("error", (err) => reject(new Error(`Failed to start scrape: ${err.message}`)));
+      proc.on("close", (code) => {
+        if (code !== 0 && !stdout) {
+          reject(new Error(`Scrape exited with code ${code}: ${stderr.trim() || "(no output)"}`));
+          return;
+        }
+        resolve(stdout || stderr || "(no output)");
+      });
+    });
+  }
+
   setupTools() {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         {
-          name: "browse_url",
-          description:
-            "Fetch a URL using Obscura's lightweight CDP engine. To access authenticated pages, pass cookies previously exported from browse_cookies.",
+          name: "browse_page",
+          description: "Fetch a page and extract content in any format — text, markdown, html, links, or cookies. Optionally evaluate JavaScript. One-shot: no session needed.",
           inputSchema: {
             type: "object",
             properties: {
               url: { type: "string", description: "The URL to visit" },
-              dump: {
+              format: {
                 type: "string",
-                enum: ["html", "text", "links"],
-                default: "html",
-                description: "The format to return content in",
+                enum: ["text", "markdown", "html", "links", "cookies"],
+                default: "text",
+                description: "Output format: text (plain, default), markdown (clean markdown), html (raw HTML), links (all hrefs), cookies (with domain/path/expiry)",
+              },
+              eval: {
+                type: "string",
+                description: "Optional JavaScript expression to evaluate. Combined with format output.",
               },
               cookies: {
                 type: "array",
-                description:
-                  "Optional cookies to inject before navigation. Accepts the same format as returned by browse_cookies — an array of objects with at least name and value. Pass cookies exported from a real browser session to access authenticated pages.",
+                description: "Optional cookies to inject before navigation. Array of {name, value, domain?, path?, ...}",
                 items: {
                   type: "object",
                   properties: {
@@ -728,249 +873,127 @@ class ObscuraServer {
               stealth: {
                 type: "boolean",
                 default: true,
-                description:
-                  "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
+                description: "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
               },
             },
             required: ["url"],
           },
         },
         {
-          name: "browse_evaluate",
-          description:
-            "Navigate to a URL and execute JavaScript in the page context. Returns the evaluated result as a string. Supports extracting data, clicking elements, filling forms, and reading page state.",
+          name: "browse_interact",
+          description: "Click an element or type text into a page. One-shot: pass url. For multi-step flows use browse_session.",
           inputSchema: {
             type: "object",
             properties: {
               url: { type: "string", description: "The URL to visit" },
-              expression: {
+              action: {
                 type: "string",
-                description:
-                  "JavaScript expression to evaluate in the page context. The result is JSON-stringified. Examples: 'document.title', 'navigator.userAgent', 'document.querySelector(\"h1\").textContent'",
-              },
-              stealth: {
-                type: "boolean",
-                default: true,
-                description:
-                  "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
-              },
-            },
-            required: ["url", "expression"],
-          },
-        },
-        {
-          name: "browse_cookies",
-          description:
-            "Navigate to a URL and retrieve all cookies set by the page. Returns cookie name, value, domain, path, and expiry for each cookie.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              url: { type: "string", description: "The URL to visit" },
-              stealth: {
-                type: "boolean",
-                default: true,
-                description:
-                  "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
-              },
-            },
-            required: ["url"],
-          },
-        },
-        {
-          name: "page_to_markdown",
-          description:
-            "Navigate to a URL and convert the page content to clean Markdown. Uses Obscura's LP.getMarkdown CDP method. Returns the full page as formatted markdown text.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              url: { type: "string", description: "The URL to visit" },
-              cookies: {
-                type: "array",
-                description:
-                  "Optional cookies to inject before navigation. An array of objects with at least name and value.",
-                items: {
-                  type: "object",
-                  properties: {
-                    name: { type: "string" },
-                    value: { type: "string" },
-                    domain: { type: "string" },
-                    path: { type: "string" },
-                    secure: { type: "boolean" },
-                    httpOnly: { type: "boolean" },
-                    sameSite: { type: "string" },
-                    expires: { type: "number" },
-                  },
-                  required: ["name", "value"],
-                },
-              },
-              stealth: {
-                type: "boolean",
-                default: true,
-                description:
-                  "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
-              },
-            },
-            required: ["url"],
-          },
-        },
-        {
-          name: "browse_click",
-          description:
-            "Navigate to a URL and click on an element identified by a CSS selector. Uses Input.dispatchMouseEvent CDP. Returns the coordinates where the click was dispatched.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              url: { type: "string", description: "The URL to visit (optional if session_id is provided)" },
-              session_id: {
-                type: "string",
-                description: "Optional session ID for persistent browsing. If provided, the click is performed on the existing session page instead of creating a new one.",
+                enum: ["click", "type"],
+                description: "Action: click an element by CSS selector, or type text into an input",
               },
               selector: {
                 type: "string",
-                description:
-                  "CSS selector for the element to click (e.g. 'a', '#submit', 'button.primary')",
-              },
-              stealth: {
-                type: "boolean",
-                default: true,
-                description:
-                  "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
-              },
-            },
-            required: ["selector"],
-          },
-        },
-        {
-          name: "browse_type",
-          description:
-            "Navigate to a URL, focus an element, and type text into it. Uses Input.dispatchKeyEvent CDP. Returns what was typed and where.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              url: { type: "string", description: "The URL to visit (optional if session_id is provided)" },
-              session_id: {
-                type: "string",
-                description: "Optional session ID for persistent browsing. If provided, the typing is performed on the existing session page instead of creating a new one.",
-              },
-              selector: {
-                type: "string",
-                description:
-                  "CSS selector for the input element to type into (e.g. '#username', 'input[name=\"q\"]')",
+                description: "CSS selector (e.g. 'a', '#submit', 'input[name=\"q\"]')",
               },
               text: {
                 type: "string",
-                description: "The text to type into the element",
+                description: "Text to type (required when action is 'type')",
+              },
+              cookies: {
+                type: "array",
+                description: "Optional cookies to inject before navigation.",
+                items: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string" },
+                    value: { type: "string" },
+                    domain: { type: "string" },
+                    path: { type: "string" },
+                    secure: { type: "boolean" },
+                    httpOnly: { type: "boolean" },
+                    sameSite: { type: "string" },
+                    expires: { type: "number" },
+                  },
+                  required: ["name", "value"],
+                },
               },
               stealth: {
                 type: "boolean",
                 default: true,
-                description:
-                  "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
+                description: "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
               },
             },
-            required: ["selector", "text"],
+            required: ["url", "action", "selector"],
           },
         },
         {
-          name: "session_create",
-          description:
-            "Create a new persistent browsing session. Returns a session ID that can be used with other session-aware tools. The session keeps a page open until explicitly closed or after 5 minutes of inactivity.",
+          name: "browse_session",
+          description: "Create and manage persistent browser sessions. Supports multi-step flows: create → goto/wait/extract/click/type → close. Sessions auto-close after 5 minutes.",
           inputSchema: {
             type: "object",
             properties: {
+              action: {
+                type: "string",
+                enum: ["create", "close", "list", "goto", "wait", "extract", "click", "type"],
+                description: "create (new session optionally at a url), close (release), list (active sessions), goto (navigate), wait (for selector/expression), extract (evaluate JS), click (element), type (text into input)",
+              },
+              session_id: {
+                type: "string",
+                description: "Session ID from create. Required for all actions except create and list.",
+              },
               url: {
                 type: "string",
-                description: "Optional URL to navigate to immediately on session creation",
-              },
-            },
-          },
-        },
-        {
-          name: "session_close",
-          description:
-            "Close a persistent browsing session and release its resources.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              session_id: {
-                type: "string",
-                description: "The session ID to close",
-              },
-            },
-            required: ["session_id"],
-          },
-        },
-        {
-          name: "session_list",
-          description:
-            "List all active persistent browsing sessions with their creation and last-used timestamps.",
-          inputSchema: {
-            type: "object",
-            properties: {},
-          },
-        },
-        {
-          name: "browse_goto",
-          description:
-            "Navigate an existing session to a new URL. The session's page remains alive after navigation.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              session_id: {
-                type: "string",
-                description: "The session ID to navigate",
-              },
-              url: { type: "string", description: "The URL to navigate to" },
-            },
-            required: ["session_id", "url"],
-          },
-        },
-        {
-          name: "browse_wait",
-          description:
-            "Wait for a condition in an existing session. Can wait for a CSS selector to appear or a JavaScript expression to return true. Useful for waiting for 2FA prompts, redirects, or dynamic content.",
-          inputSchema: {
-            type: "object",
-            properties: {
-              session_id: {
-                type: "string",
-                description: "The session ID",
+                description: "URL for create (initial nav) or goto (where to go)",
               },
               selector: {
                 type: "string",
-                description: "CSS selector to wait for (e.g. '.otp-input', '#2fa-form')",
+                description: "CSS selector for wait/click/type",
               },
               expression: {
                 type: "string",
-                description: "JavaScript expression that should return true (alternative to selector)",
+                description: "JavaScript expression for wait (condition) or extract (to evaluate)",
+              },
+              text: {
+                type: "string",
+                description: "Text to type (required when action is 'type')",
               },
               timeout: {
                 type: "number",
                 default: 30000,
-                description: "Maximum wait time in milliseconds (1000-120000, default 30000)",
+                description: "Max wait in ms (1000-120000, default 30000)",
               },
             },
-            required: ["session_id"],
+            required: ["action"],
           },
         },
         {
-          name: "browse_extract",
-          description:
-            "Execute a JavaScript expression in an existing session and return the result. Useful for reading page state, extracting data, or checking conditions after navigation.",
+          name: "browse_scrape",
+          description: "Scrape multiple URLs in parallel using Obscura's worker processes. Each URL gets its own isolated worker — ideal for bulk data extraction. Returns structured JSON with per-URL results, timing, and error info.",
           inputSchema: {
             type: "object",
             properties: {
-              session_id: {
-                type: "string",
-                description: "The session ID",
+              urls: {
+                type: "array",
+                items: { type: "string" },
+                minItems: 1,
+                description: "URLs to scrape in parallel (max 1000)",
               },
-              expression: {
+              eval: {
                 type: "string",
-                description:
-                  "JavaScript expression to evaluate. Examples: 'document.title', 'document.querySelector(\".balance\").textContent'",
+                description: "JavaScript expression to evaluate on each page (e.g. 'document.title', 'document.querySelector(\\\"h1\\\").textContent')",
+              },
+              concurrency: {
+                type: "number",
+                default: 10,
+                description: "Parallel worker processes (default 10, max 100)",
+              },
+              timeout: {
+                type: "number",
+                default: 60,
+                description: "Per-worker timeout in seconds (default 60, max 300)",
               },
             },
-            required: ["session_id", "expression"],
+            required: ["urls"],
           },
         },
       ],
@@ -978,101 +1001,27 @@ class ObscuraServer {
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-
       try {
-        if (name === "browse_url") {
-          const output = await this.browseUrl(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
+        if (name === "browse_page") {
+          const output = await this.browsePage(args);
+          return { content: [{ type: "text", text: output }] };
         }
-
-        if (name === "browse_evaluate") {
-          if (!args || !args.expression) {
-            throw new Error("expression is required");
-          }
-          const output = await this.evaluate(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
+        if (name === "browse_interact") {
+          const output = await this.browseInteract(args);
+          return { content: [{ type: "text", text: output }] };
         }
-
-        if (name === "browse_cookies") {
-          const output = await this.getCookies(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
+        if (name === "browse_session") {
+          const output = await this.browseSession(args);
+          return { content: [{ type: "text", text: output }] };
         }
-
-        if (name === "page_to_markdown") {
-          const output = await this.pageToMarkdown(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
+        if (name === "browse_scrape") {
+          const output = await this.browseScrape(args);
+          return { content: [{ type: "text", text: output }] };
         }
-
-        if (name === "browse_click") {
-          const output = await this.browseClick(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
-        }
-
-        if (name === "browse_type") {
-          const output = await this.browseType(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
-        }
-
-        if (name === "session_create") {
-          const output = await this.sessionCreate(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
-        }
-
-        if (name === "session_close") {
-          const output = await this.sessionClose(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
-        }
-
-        if (name === "session_list") {
-          const output = await this.sessionList();
-          return {
-            content: [{ type: "text", text: output }],
-          };
-        }
-
-        if (name === "browse_goto") {
-          const output = await this.browseGoto(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
-        }
-
-        if (name === "browse_wait") {
-          const output = await this.browseWait(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
-        }
-
-        if (name === "browse_extract") {
-          const output = await this.browseExtract(args);
-          return {
-            content: [{ type: "text", text: output }],
-          };
-        }
-
         throw new Error(`Tool not found: ${name}`);
       } catch (error) {
         return {
-          content: [
-            { type: "text", text: `Execution Error: ${error.message}` },
-          ],
+          content: [{ type: "text", text: `Execution Error: ${error.message}` }],
           isError: true,
         };
       }
