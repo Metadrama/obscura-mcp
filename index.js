@@ -320,7 +320,7 @@ class ObscuraServer {
     return parsed.toString();
   }
 
-  async withPage(url, callback, cookies, sessionId) {
+  async withPage(url, callback, cookies, sessionId, extraOpts = {}) {
     if (!this.cdp) {
       throw new Error("Obscura CDP client is not connected.");
     }
@@ -329,6 +329,19 @@ class ObscuraServer {
     if (sessionId) {
       const sess = this.sessions.get(sessionId);
       if (url) {
+        // Apply userAgent / headers before navigation
+        if (extraOpts.userAgent) {
+          await this.cdp.send("Network.setUserAgentOverride", { userAgent: extraOpts.userAgent }, sess.sessionId).catch(() => {});
+        }
+        if (extraOpts.headers && typeof extraOpts.headers === "object") {
+          const hdrs = {};
+          for (const [k, v] of Object.entries(extraOpts.headers)) {
+            if (typeof v === "string") hdrs[k] = v;
+          }
+          if (Object.keys(hdrs).length > 0) {
+            await this.cdp.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sess.sessionId).catch(() => {});
+          }
+        }
         await this.cdp.send("Page.navigate", { url }, sess.sessionId);
         await delay(OBSCURA_NAVIGATION_WAIT_MS);
       }
@@ -379,6 +392,19 @@ class ObscuraServer {
         await this.cdp
           .send("Network.setCookies", { cookies: cleaned }, sessId)
           .catch(() => {});
+      }
+      // Apply userAgent / headers before navigation
+      if (extraOpts.userAgent) {
+        await this.cdp.send("Network.setUserAgentOverride", { userAgent: extraOpts.userAgent }, sessId).catch(() => {});
+      }
+      if (extraOpts.headers && typeof extraOpts.headers === "object") {
+        const hdrs = {};
+        for (const [k, v] of Object.entries(extraOpts.headers)) {
+          if (typeof v === "string") hdrs[k] = v;
+        }
+        if (Object.keys(hdrs).length > 0) {
+          await this.cdp.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sessId).catch(() => {});
+        }
       }
       await this.cdp.send("Page.navigate", { url }, sessId);
       await delay(OBSCURA_NAVIGATION_WAIT_MS);
@@ -624,6 +650,10 @@ class ObscuraServer {
   async sessionCreate(args = {}) {
     const url = args.url ? this.validateUrl(args.url) : null;
     const id = await this.sessions.create(url);
+    if (args.clearCookies) {
+      const sess = this.sessions.get(id);
+      await this.cdp.send("Network.clearBrowserCookies", {}, sess.sessionId).catch(() => {});
+    }
     return `Created session: ${id}`;
   }
 
@@ -645,6 +675,18 @@ class ObscuraServer {
     if (!id) throw new Error("Invalid argument: session_id is required");
     const url = this.validateUrl(args.url);
     const sess = this.sessions.get(id);
+    if (args.userAgent) {
+      await this.cdp.send("Network.setUserAgentOverride", { userAgent: args.userAgent }, sess.sessionId).catch(() => {});
+    }
+    if (args.headers && typeof args.headers === "object") {
+      const hdrs = {};
+      for (const [k, v] of Object.entries(args.headers)) {
+        if (typeof v === "string") hdrs[k] = v;
+      }
+      if (Object.keys(hdrs).length > 0) {
+        await this.cdp.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sess.sessionId).catch(() => {});
+      }
+    }
     await this.cdp.send("Page.navigate", { url }, sess.sessionId);
     await delay(OBSCURA_NAVIGATION_WAIT_MS);
     return `Navigated to ${url}`;
@@ -694,10 +736,17 @@ class ObscuraServer {
     const format = args.format || "text";
     const evalExpr = args.eval;
     const cookies = Array.isArray(args.cookies) ? args.cookies : [];
+    const extraOpts = {};
+    if (args.userAgent) extraOpts.userAgent = args.userAgent;
+    if (args.headers && typeof args.headers === "object") {
+      extraOpts.headers = {};
+      for (const [k, v] of Object.entries(args.headers)) {
+        if (typeof v === "string") extraOpts.headers[k] = v;
+      }
+    }
 
     return await this.withPage(url, async (sessionId) => {
       let output = "";
-
       if (format === "markdown") {
         const result = await this.cdp.send("LP.getMarkdown", {}, sessionId);
         output = result?.markdown || "";
@@ -720,6 +769,43 @@ class ObscuraServer {
             )
             .join("\n");
         }
+      } else if (format === "axtree") {
+        const axResult = await this.cdp.send("Accessibility.getFullAXTree", {}, sessionId);
+        const nodes = axResult.nodes || [];
+        if (nodes.length === 0) {
+          output = "No accessibility tree nodes found.";
+        } else {
+          const lines = [];
+          const seen = new Set();
+          for (const n of nodes) {
+            const role = n.role?.value || "generic";
+            const name = n.name?.value || "";
+            const value = n.value?.value || "";
+            const key = `${role}:${name}`;
+            if (seen.has(key) && !name && role === "generic") continue;
+            seen.add(key);
+            const parts = [`[${role}]`];
+            if (name) parts.push(` "${name}"`);
+            if (value) parts.push(` = ${value}`);
+            lines.push(parts.join(""));
+            const desc = n.description?.value || "";
+            if (desc) lines.push(`  description: ${desc}`);
+            const props = (n.properties || []).filter((p) => p.value?.value === true).map((p) => p.name);
+            if (props.length) lines.push(`  states: ${props.join(", ")}`);
+          }
+          output = lines.join("\n");
+        }
+      } else if (format === "layout") {
+        const layoutResult = await this.cdp.send("Page.getLayoutMetrics", {}, sessionId);
+        const vp = layoutResult.layoutViewport || {};
+        const cs = layoutResult.contentSize || {};
+        const visual = layoutResult.visualViewport || {};
+        output = [
+          `Layout Viewport: ${vp.clientWidth || "?"}x${vp.clientHeight || "?"} (scroll: ${vp.scrollX || 0}, ${vp.scrollY || 0})`,
+          `Content Size: ${cs.width || "?"}x${cs.height || "?"}`,
+          `Visual Viewport: ${visual.clientWidth || "?"}x${visual.clientHeight || "?"} (offset: ${visual.offsetX || 0}, ${visual.offsetY || 0})`,
+          `Page scale: ${visual.scale || 1}`,
+        ].join("\n");
       } else {
         const html = await this.getOuterHtml(sessionId);
         output = stripHtml(html);
@@ -743,7 +829,7 @@ class ObscuraServer {
       }
 
       return output;
-    }, cookies);
+    }, cookies, undefined, extraOpts);
   }
 
   async browseInteract(args = {}) {
@@ -844,9 +930,9 @@ class ObscuraServer {
               url: { type: "string", description: "The URL to visit" },
               format: {
                 type: "string",
-                enum: ["text", "markdown", "html", "links", "cookies"],
+                enum: ["text", "markdown", "html", "links", "cookies", "axtree", "layout"],
                 default: "text",
-                description: "Output format: text (plain, default), markdown (clean markdown), html (raw HTML), links (all hrefs), cookies (with domain/path/expiry)",
+                description: "Output format: text (plain, default), markdown (clean markdown), html (raw HTML), links (all hrefs), cookies (with domain/path/expiry), axtree (accessibility tree), layout (viewport dimensions)",
               },
               eval: {
                 type: "string",
@@ -874,6 +960,15 @@ class ObscuraServer {
                 type: "boolean",
                 default: true,
                 description: "Accepted for compatibility. Stealth behavior is controlled by the Obscura server.",
+              },
+              userAgent: {
+                type: "string",
+                description: "Override User-Agent string for this request.",
+              },
+              headers: {
+                type: "object",
+                description: "Extra HTTP headers to send. Object with string key/value pairs.",
+                additionalProperties: { type: "string" },
               },
             },
             required: ["url"],
@@ -961,6 +1056,19 @@ class ObscuraServer {
                 type: "number",
                 default: 30000,
                 description: "Max wait in ms (1000-120000, default 30000)",
+              },
+              userAgent: {
+                type: "string",
+                description: "Override User-Agent string (for create/goto actions).",
+              },
+              headers: {
+                type: "object",
+                description: "Extra HTTP headers to send. Object with string key/value pairs (for create/goto actions).",
+                additionalProperties: { type: "string" },
+              },
+              clearCookies: {
+                type: "boolean",
+                description: "If true, clears all cookies after session creation (for create action only).",
               },
             },
             required: ["action"],

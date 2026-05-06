@@ -10,7 +10,7 @@ Exposes Obscura's native CDP capabilities through a clean MCP interface — no C
 npm install -g obscura-mcp
 ```
 
-The install is **instant** — the browser binary (~80 MB) is downloaded lazily on first use. When you run `obscura-mcp`, it will automatically download and cache the binary.
+The npm package itself is a lightweight Node.js wrapper (~20 KB). The browser binary (~80 MB) is downloaded automatically on first use — no separate install step needed.
 
 The binary is cached at `~/.obscura/bin/` and survives npm upgrades.
 
@@ -28,16 +28,18 @@ npm install -g obscura-mcp
 # Verify
 obscura-mcp --version
 
-# Start MCP server
+# Start MCP server (stdio — primary transport)
 obscura-mcp --transport stdio
 
 # Or with HTTP transport
 obscura-mcp --transport streamable-http
 ```
 
+Most MCP clients (Claude Desktop, Cline, Continue) connect via `stdio`. The `streamable-http` transport is also supported for custom integrations.
+
 ## Tools
 
-Four tools cover the full browser automation surface — from one-shot page reading to parallel bulk scraping.
+Four tools cover the essentials of browsing, interacting, and scraping — read pages, click elements, run persistent sessions, and scrape at scale.
 
 ### `browse_page` — one-shot page reading
 
@@ -46,19 +48,20 @@ Get content from any page in a single call. Combine output format with optional 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `url` | `string` | — | The URL to visit |
-| `format` | `"text"` \| `"markdown"` \| `"html"` \| `"links"` \| `"cookies"` | `"text"` | Output format |
+| `format` | `"text"` \| `"markdown"` \| `"html"` \| `"links"` \| `"cookies"` \| `"axtree"` \| `"layout"` | `"text"` | Output format |
 | `eval` | `string` | — | JavaScript expression to evaluate (appended to output) |
 | `cookies` | `array` | — | Cookies to inject `[{name, value, domain?, path?, ...}]` |
+| `user_agent` | `string` | — | Override the browser user-agent string |
+| `headers` | `object` | — | Extra HTTP headers `{key: value, ...}` |
 
 **Examples:**
 
 ```
 browse_page(url: "https://example.com")
 browse_page(url: "https://example.com", format: "markdown")
-browse_page(url: "https://news.ycombinator.com", format: "links")
-browse_page(url: "https://example.com", format: "cookies")
-browse_page(url: "https://example.com", eval: "document.title")
-browse_page(url: "https://example.com", format: "markdown", eval: "document.title")
+browse_page(url: "https://example.com", format: "axtree")
+browse_page(url: "https://example.com", format: "layout")
+browse_page(url: "https://example.com", user_agent: "TestBot/1.0")
 ```
 
 | `format` | What you get |
@@ -68,6 +71,8 @@ browse_page(url: "https://example.com", format: "markdown", eval: "document.titl
 | `"html"` | Raw HTML markup |
 | `"links"` | All href values — one per line |
 | `"cookies"` | Cookies with name, value, domain, path, expiry |
+| `"axtree"` | Accessibility tree — roles, names, values of all elements |
+| `"layout"` | Viewport metrics — dimensions, scroll offsets, device scale |
 
 When `eval` is provided, the JavaScript result is appended to the format output under a `--- eval ---` divider.
 
@@ -109,12 +114,15 @@ Create a persistent browser session, interact with it across multiple calls, the
 | `expression` | `string` | `wait` (if no selector), `extract` | JavaScript expression |
 | `text` | `string` | `type` | Text to type |
 | `timeout` | `number` | `wait` (optional) | Max wait in ms (default 30000, max 120000) |
+| `user_agent` | `string` | `create`, `goto` | Override user-agent string for navigation |
+| `headers` | `object` | `create`, `goto` | Extra HTTP headers `{key: value, ...}` |
+| `clear_cookies` | `boolean` | `create` | Clear all browser cookies on session creation |
 
 **Session lifecycle:**
 
 | `action` | What it does | Returns |
 |----------|-------------|---------|
-| `create` | Opens a new browser tab. Optionally navigates to a URL. | Session ID |
+| `create` | Opens a new browser tab. Optionally clears cookies. | Session ID |
 | `close` | Releases the tab and all its resources. Idempotent. | Confirmation |
 | `list` | Shows all active sessions with timestamps. | Session list |
 | `goto` | Navigates to a new URL. Page stays alive. | Confirmation |
@@ -205,7 +213,7 @@ On errors (timeout, network failure, etc.), the per-URL result includes an `"err
 }
 ```
 
-This is the tool that directly leverages Obscura's core advantage over headless Chrome: lightweight parallel scraping with built-in stealth. The 30 MB per-worker memory footprint means 100 concurrent workers use less memory than a single Chrome instance.
+This is the tool that directly leverages Obscura's core advantage over headless Chrome: lightweight parallel scraping with built-in stealth. The ~30 MB per-worker memory footprint means 100 concurrent workers use less memory than a single Chrome instance.
 
 ## Configuration
 
