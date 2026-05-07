@@ -192,6 +192,7 @@ class CdpClient {
     this.endpoint = endpoint;
     this.nextId = 1;
     this.pending = new Map();
+    this.eventListeners = new Map();
     this.socket = null;
   }
 
@@ -203,7 +204,10 @@ class CdpClient {
       socket.once("open", resolve);
       socket.once("error", reject);
       socket.on("message", (raw) => this.handleMessage(raw));
-      socket.on("close", () => this.rejectPending("CDP connection closed"));
+      socket.on("close", () => {
+        this.rejectPending("CDP connection closed");
+        this.rejectAllEventListeners("CDP connection closed");
+      });
     });
   }
 
@@ -215,24 +219,48 @@ class CdpClient {
       return;
     }
 
-    if (!message.id || !this.pending.has(message.id)) {
+    // CDP response (has id matching a pending request)
+    if (message.id && this.pending.has(message.id)) {
+      const pending = this.pending.get(message.id);
+      this.pending.delete(message.id);
+      clearTimeout(pending.timeout);
+
+      if (message.error) {
+        const error = new Error(
+          message.error.message || JSON.stringify(message.error),
+        );
+        error.cdpError = message.error;
+        pending.reject(error);
+        return;
+      }
+
+      pending.resolve(message.result || {});
       return;
     }
 
-    const pending = this.pending.get(message.id);
-    this.pending.delete(message.id);
-    clearTimeout(pending.timeout);
-
-    if (message.error) {
-      const error = new Error(
-        message.error.message || JSON.stringify(message.error),
-      );
-      error.cdpError = message.error;
-      pending.reject(error);
-      return;
+    // CDP event (has method, no matching pending request)
+    if (message.method && this.eventListeners.has(message.method)) {
+      const listeners = this.eventListeners.get(message.method);
+      const remaining = [];
+      for (const listener of listeners) {
+        if (listener.sessionId && message.sessionId !== listener.sessionId) {
+          remaining.push(listener);
+          continue;
+        }
+        if (listener.filter && !listener.filter(message.params)) {
+          remaining.push(listener);
+          continue;
+        }
+        clearTimeout(listener.timeout);
+        listener.resolve(message.params);
+        // one-shot: consumed, don't add back to remaining
+      }
+      if (remaining.length > 0) {
+        this.eventListeners.set(message.method, remaining);
+      } else {
+        this.eventListeners.delete(message.method);
+      }
     }
-
-    pending.resolve(message.result || {});
   }
 
   rejectPending(message) {
@@ -241,6 +269,36 @@ class CdpClient {
       pending.reject(new Error(message));
       this.pending.delete(id);
     }
+  }
+
+  rejectAllEventListeners(message) {
+    for (const [method, listeners] of this.eventListeners.entries()) {
+      for (const listener of listeners) {
+        clearTimeout(listener.timeout);
+        listener.reject(new Error(message));
+      }
+    }
+    this.eventListeners.clear();
+  }
+
+  waitForEvent(method, { sessionId, filter, timeoutMs } = {}) {
+    return new Promise((resolve, reject) => {
+      if (!this.eventListeners.has(method)) {
+        this.eventListeners.set(method, []);
+      }
+      const timeout = setTimeout(() => {
+        const list = this.eventListeners.get(method) || [];
+        const remaining = list.filter(l => l !== listener);
+        if (remaining.length > 0) {
+          this.eventListeners.set(method, remaining);
+        } else {
+          this.eventListeners.delete(method);
+        }
+        reject(new Error(`Timeout waiting for ${method} after ${timeoutMs}ms`));
+      }, timeoutMs || 30000);
+      const listener = { sessionId, filter, resolve, reject, timeout };
+      this.eventListeners.get(method).push(listener);
+    });
   }
 
   send(method, params = {}, sessionId) {
@@ -320,6 +378,31 @@ class ObscuraServer {
     return parsed.toString();
   }
 
+  async waitForNavigation(sessionId, options = {}) {
+    if (!this.cdp) return Promise.resolve();
+    const timeoutMs = options.timeoutMs != null ? options.timeoutMs : OBSCURA_NAVIGATION_WAIT_MS;
+
+    // Start waiting for the lifecycle event BEFORE navigation is sent.
+    // Events arrive before the Page.navigate response — if we register
+    // after send() resolves, we miss them and hit the timeout.
+    const loadPromise = this.cdp.waitForEvent("Page.lifecycleEvent", {
+      sessionId,
+      filter: p => p && p.name === "load",
+      timeoutMs,
+    }).catch(() => {
+      // Fallback: DOMContentLoaded
+      return this.cdp.waitForEvent("Page.lifecycleEvent", {
+        sessionId,
+        filter: p => p && p.name === "DOMContentLoaded",
+        timeoutMs: Math.min(timeoutMs, 5000),
+      }).catch(() => {
+        // Final fallback: proceed anyway
+      });
+    });
+
+    return loadPromise;
+  }
+
   async withPage(url, callback, cookies, sessionId, extraOpts = {}) {
     if (!this.cdp) {
       throw new Error("Obscura CDP client is not connected.");
@@ -342,8 +425,9 @@ class ObscuraServer {
             await this.cdp.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sess.sessionId).catch(() => {});
           }
         }
+        const navReady = this.waitForNavigation(sess.sessionId);
         await this.cdp.send("Page.navigate", { url }, sess.sessionId);
-        await delay(OBSCURA_NAVIGATION_WAIT_MS);
+        await navReady;
       }
       return await callback(sess.sessionId, sess.targetId);
     }
@@ -406,8 +490,9 @@ class ObscuraServer {
           await this.cdp.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sessId).catch(() => {});
         }
       }
+      const navReady = this.waitForNavigation(sessId);
       await this.cdp.send("Page.navigate", { url }, sessId);
-      await delay(OBSCURA_NAVIGATION_WAIT_MS);
+      await navReady;
 
       return await callback(sessId, targetId);
     } finally {
@@ -687,8 +772,9 @@ class ObscuraServer {
         await this.cdp.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sess.sessionId).catch(() => {});
       }
     }
+    const navReady = this.waitForNavigation(sess.sessionId);
     await this.cdp.send("Page.navigate", { url }, sess.sessionId);
-    await delay(OBSCURA_NAVIGATION_WAIT_MS);
+    await navReady;
     return `Navigated to ${url}`;
   }
 
@@ -1293,7 +1379,24 @@ class ObscuraServer {
 
       console.error("Starting Obscura service...");
       console.error(`Using Obscura binary: ${obscuraPath}`);
-      this.obscuraProcess = spawn(obscuraPath, ["serve"], {
+
+      // Build serve args from optional env vars
+      const serveArgs = ["serve"];
+      if (process.env.OBSCURA_STEALTH === "true" || process.env.OBSCURA_STEALTH === "1") {
+        serveArgs.push("--stealth");
+      }
+      if (process.env.OBSCURA_PROXY) {
+        serveArgs.push("--proxy", process.env.OBSCURA_PROXY);
+      }
+      if (process.env.OBSCURA_USER_AGENT) {
+        serveArgs.push("--user-agent", process.env.OBSCURA_USER_AGENT);
+      }
+      if (process.env.OBSCURA_VERBOSE === "true" || process.env.OBSCURA_VERBOSE === "1") {
+        serveArgs.push("--verbose");
+      }
+      console.error(`Obscura args: ${serveArgs.join(" ")}`);
+
+      this.obscuraProcess = spawn(obscuraPath, serveArgs, {
         shell: false,
         windowsHide: true,
         stdio: ["ignore", "pipe", "pipe"],
