@@ -12,8 +12,7 @@
     "sourceMap": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "noImplicitAny": false,
-    "strictNullChecks": false
+    "strict": true
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist", "**/__tests__/**"]

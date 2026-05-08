@@ -1,6 +1,6 @@
 {
   "name": "obscura-mcp",
-  "version": "0.1.4-2",
+  "version": "0.1.4-3",
   "mcpName": "io.github.Metadrama/obscura-mcp",
   "description": "MCP server adapter for Obscura headless browser - high-performance web scraping with anti-detection",
   "main": "dist/index.js",

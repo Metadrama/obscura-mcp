@@ -4,13 +4,14 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { spawn, execSync } from "child_process";
+import { spawn, execSync, ChildProcess } from "child_process";
 import fs from "fs";
 import http from "http";
 import path from "path";
 import WebSocket from "ws";
 import { ensureBinary, ensureWorker, expectedBinaryName } from "./scripts/install-obscura.js";
 import pkg from "./package.json";
+import type { Cookie, WaitForEventOptions } from "./types.js";
 
 const MCP_HTTP_HOST = process.env.MCP_HTTP_HOST || "127.0.0.1";
 const MCP_HTTP_PORT = Number(process.env.MCP_HTTP_PORT || "3000");
@@ -125,7 +126,7 @@ class SessionManager {
   stop() {
     if (this._cleanupTimer) {
       clearInterval(this._cleanupTimer);
-      this._cleanupTimer = null;
+      this._cleanupTimer = undefined;
     }
     for (const [id] of this.sessions) {
       this.close(id).catch(() => {});
@@ -191,7 +192,7 @@ class CdpClient {
   nextId: number;
   pending: Map<number, any>;
   eventListeners: Map<string, any[]>;
-  socket: any;
+  socket: WebSocket | null;
 
   constructor(endpoint: string) {
     this.endpoint = endpoint;
@@ -216,7 +217,7 @@ class CdpClient {
     });
   }
 
-  handleMessage(raw: any) {
+  handleMessage(raw: WebSocket.Data) {
     let message;
     try {
       message = JSON.parse(raw.toString("utf8"));
@@ -247,7 +248,7 @@ class CdpClient {
     if (message.method && this.eventListeners.has(message.method)) {
       const listeners = this.eventListeners.get(message.method);
       const remaining = [];
-      for (const listener of listeners) {
+      for (const listener of listeners || []) {
         if (listener.sessionId && message.sessionId !== listener.sessionId) {
           remaining.push(listener);
           continue;
@@ -286,7 +287,8 @@ class CdpClient {
     this.eventListeners.clear();
   }
 
-  waitForEvent(method: string, { sessionId, filter, timeoutMs }: any = {}) {
+  waitForEvent(method: string, options: WaitForEventOptions = {}) {
+    const { sessionId, filter, timeoutMs } = options;
     return new Promise((resolve, reject) => {
       if (!this.eventListeners.has(method)) {
         this.eventListeners.set(method, []);
@@ -302,7 +304,7 @@ class CdpClient {
         reject(new Error(`Timeout waiting for ${method} after ${timeoutMs}ms`));
       }, timeoutMs || 30000);
       const listener = { sessionId, filter, resolve, reject, timeout };
-      this.eventListeners.get(method).push(listener);
+      this.eventListeners.get(method)?.push(listener) || [];
     });
   }
 
@@ -324,7 +326,7 @@ class CdpClient {
       }, CDP_REQUEST_TIMEOUT_MS);
 
       this.pending.set(id, { resolve, reject, timeout });
-      this.socket.send(JSON.stringify(message), (error) => {
+      this.socket!.send(JSON.stringify(message), (error?: Error | null) => {
         if (!error) {
           return;
         }
@@ -345,7 +347,7 @@ class CdpClient {
 }
 
 class ObscuraServer {
-  obscuraProcess: any = null;
+  obscuraProcess: ChildProcess | null = null;
   cdp: CdpClient | null = null;
   sessions: SessionManager | null = null;
   server: Server;
@@ -392,15 +394,15 @@ class ObscuraServer {
     // Start waiting for the lifecycle event BEFORE navigation is sent.
     // Events arrive before the Page.navigate response — if we register
     // after send() resolves, we miss them and hit the timeout.
-    const loadPromise = this.cdp.waitForEvent("Page.lifecycleEvent", {
+    const loadPromise = this.cdp!.waitForEvent("Page.lifecycleEvent", {
       sessionId,
-      filter: p => p && p.name === "load",
+      filter: (p: unknown) => (p as { name?: string })?.name === "load",
       timeoutMs,
     }).catch(() => {
       // Fallback: DOMContentLoaded
-      return this.cdp.waitForEvent("Page.lifecycleEvent", {
+      return this.cdp!.waitForEvent("Page.lifecycleEvent", {
         sessionId,
-        filter: p => p && p.name === "DOMContentLoaded",
+        filter: (p: unknown) => (p as { name?: string })?.name === "DOMContentLoaded",
         timeoutMs: Math.min(timeoutMs, 5000),
       }).catch(() => {
         // Final fallback: proceed anyway
@@ -410,30 +412,30 @@ class ObscuraServer {
     return loadPromise;
   }
 
-  async withPage(url: string, callback: any, cookies?: any, sessionId?: string, extraOpts: Record<string, any> = {}) {
+  async withPage(url: string, callback: (sessionId: string, targetId?: string) => Promise<string>, cookies?: Cookie[], sessionId?: string, extraOpts: Record<string, any> = {}) {
     if (!this.cdp) {
       throw new Error("Obscura CDP client is not connected.");
     }
 
     // Session mode: use existing session instead of creating a new target
     if (sessionId) {
-      const sess = this.sessions.get(sessionId);
+      const sess = this.sessions!.get(sessionId);
       if (url) {
         // Apply userAgent / headers before navigation
         if (extraOpts.userAgent) {
-          await this.cdp.send("Network.setUserAgentOverride", { userAgent: extraOpts.userAgent }, sess.sessionId).catch(() => {});
+          await this.cdp!.send("Network.setUserAgentOverride", { userAgent: extraOpts.userAgent }, sess.sessionId).catch(() => {});
         }
         if (extraOpts.headers && typeof extraOpts.headers === "object") {
-          const hdrs = {};
+          const hdrs: Record<string, string> = {};
           for (const [k, v] of Object.entries(extraOpts.headers)) {
             if (typeof v === "string") hdrs[k] = v;
           }
           if (Object.keys(hdrs).length > 0) {
-            await this.cdp.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sess.sessionId).catch(() => {});
+            await this.cdp!.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sess.sessionId).catch(() => {});
           }
         }
         const navReady = this.waitForNavigation(sess.sessionId);
-        await this.cdp.send("Page.navigate", { url }, sess.sessionId);
+        await this.cdp!.send("Page.navigate", { url }, sess.sessionId);
         await navReady;
       }
       return await callback(sess.sessionId, sess.targetId);
@@ -443,7 +445,7 @@ class ObscuraServer {
     let sessId;
 
     try {
-      const target = await this.cdp.send("Target.createTarget", {
+      const target = await this.cdp!.send("Target.createTarget", {
         url: "about:blank",
       });
       targetId = target.targetId;
@@ -451,7 +453,7 @@ class ObscuraServer {
         throw new Error("Obscura did not return a target id.");
       }
 
-      const attached = await this.cdp.send("Target.attachToTarget", {
+      const attached = await this.cdp!.send("Target.attachToTarget", {
         targetId,
         flatten: true,
       });
@@ -460,13 +462,13 @@ class ObscuraServer {
         throw new Error("Obscura did not return a CDP session id.");
       }
 
-      await this.cdp.send("Page.enable", {}, sessId).catch(() => {});
-      await this.cdp.send("DOM.enable", {}, sessId).catch(() => {});
+      await this.cdp!.send("Page.enable", {}, sessId).catch(() => {});
+      await this.cdp!.send("DOM.enable", {}, sessId).catch(() => {});
       if (cookies && cookies.length > 0) {
         // Strip leading dot from domain if present — Network.getCookies
         // returns domains with leading dot (e.g. ".example.com") but
         // Network.setCookies may reject them.
-        const cleaned = cookies.map((c) => {
+        const cleaned = cookies.map((c: Cookie) => {
           const copy = { ...c };
           if (copy.domain && copy.domain.startsWith(".")) {
             copy.domain = copy.domain.slice(1);
@@ -486,19 +488,19 @@ class ObscuraServer {
       }
       // Apply userAgent / headers before navigation
       if (extraOpts.userAgent) {
-        await this.cdp.send("Network.setUserAgentOverride", { userAgent: extraOpts.userAgent }, sessId).catch(() => {});
+        await this.cdp!.send("Network.setUserAgentOverride", { userAgent: extraOpts.userAgent }, sessId).catch(() => {});
       }
       if (extraOpts.headers && typeof extraOpts.headers === "object") {
-        const hdrs = {};
+        const hdrs: Record<string, string> = {};
         for (const [k, v] of Object.entries(extraOpts.headers)) {
           if (typeof v === "string") hdrs[k] = v;
         }
         if (Object.keys(hdrs).length > 0) {
-          await this.cdp.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sessId).catch(() => {});
+          await this.cdp!.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sessId).catch(() => {});
         }
       }
       const navReady = this.waitForNavigation(sessId);
-      await this.cdp.send("Page.navigate", { url }, sessId);
+      await this.cdp!.send("Page.navigate", { url }, sessId);
       await navReady;
 
       return await callback(sessId, targetId);
@@ -512,7 +514,7 @@ class ObscuraServer {
   }
 
   async getOuterHtml(sessionId: string) {
-    const docResult = await this.cdp.send("DOM.getDocument", {}, sessionId);
+    const docResult = await this.cdp!.send("DOM.getDocument", {}, sessionId);
     if (docResult?.root?.nodeId === undefined || docResult?.root?.nodeId === null) {
       throw new Error("Obscura did not return a document root.");
     }
@@ -525,92 +527,12 @@ class ObscuraServer {
       }
     }
 
-    const outerHTML = await this.cdp.send(
+    const outerHTML = await this.cdp!.send(
       "DOM.getOuterHTML",
       { nodeId },
       sessionId,
     );
     return outerHTML?.outerHTML || "";
-  }
-
-  async browseUrl(args: Record<string, any> = {}) {
-    const url = this.validateUrl(args.url);
-    const dump = ["html", "text", "links"].includes(args.dump)
-      ? args.dump
-      : "html";
-    const cookies = Array.isArray(args.cookies) ? args.cookies : [];
-
-    return await this.withPage(url, async (sessionId) => {
-      const html = await this.getOuterHtml(sessionId);
-
-      if (dump === "text") {
-        return stripHtml(html);
-      }
-
-      if (dump === "links") {
-        return extractLinks(html, url);
-      }
-
-      return html;
-    }, cookies);
-  }
-
-  async evaluate(args: Record<string, any> = {}) {
-    const url = this.validateUrl(args.url);
-    const expression = args.expression;
-
-    return await this.withPage(url, async (sessionId) => {
-      const result = await this.cdp.send(
-        "Runtime.evaluate",
-        { expression },
-        sessionId,
-      );
-
-      if (result.exceptionDetails) {
-        const detail = result.exceptionDetails.exception || result.exceptionDetails;
-        throw new Error(
-          `JS exception: ${detail.description || detail.text || JSON.stringify(detail)}`,
-        );
-      }
-
-      if (result.result === undefined || result.result === null) {
-        return "undefined";
-      }
-
-      const value = result.result.value ?? result.result.description ?? JSON.stringify(result.result);
-      return typeof value === "string" ? value : JSON.stringify(value);
-    });
-  }
-
-  async getCookies(args: Record<string, any> = {}) {
-    const url = this.validateUrl(args.url);
-
-    return await this.withPage(url, async (sessionId) => {
-      await this.cdp.send("Network.enable", {}, sessionId).catch(() => {});
-      const result = await this.cdp.send("Network.getCookies", {}, sessionId);
-      const cookies = result.cookies || [];
-
-      if (cookies.length === 0) {
-        return "No cookies found for this page.";
-      }
-
-      return cookies
-        .map(
-          (c) =>
-            `${c.name}=${c.value} (domain: ${c.domain}, path: ${c.path}${c.expires && c.expires > 0 ? `, expires: ${new Date(c.expires * 1000).toISOString()}` : ", session"})`,
-        )
-        .join("\n");
-    });
-  }
-
-  async pageToMarkdown(args: Record<string, any> = {}) {
-    const url = this.validateUrl(args.url);
-    const cookies = Array.isArray(args.cookies) ? args.cookies : [];
-
-    return await this.withPage(url, async (sessionId) => {
-      const result = await this.cdp.send("LP.getMarkdown", {}, sessionId);
-      return result?.markdown || "";
-    }, cookies);
   }
 
   async browseClick(args: Record<string, any> = {}) {
@@ -623,9 +545,9 @@ class ObscuraServer {
     // One-shot mode: URL required
     const url = sessionId ? (args.url || null) : this.validateUrl(args.url);
 
-    return await this.withPage(url, async (sessId) => {
+    return await this.withPage(url, async (sessId: string) => {
       // Get element position via JS
-      const rectResult = await this.cdp.send(
+      const rectResult = await this.cdp!.send(
         "Runtime.evaluate",
         {
           expression: `JSON.stringify((() => {
@@ -650,20 +572,20 @@ class ObscuraServer {
       }
 
       // Dispatch mouse click
-      await this.cdp.send(
+      await this.cdp!.send(
         "Input.dispatchMouseEvent",
         { type: "mousePressed", x: rect.x, y: rect.y, button: "left", clickCount: 1 },
         sessId,
       );
 
-      await this.cdp.send(
+      await this.cdp!.send(
         "Input.dispatchMouseEvent",
         { type: "mouseReleased", x: rect.x, y: rect.y, button: "left", clickCount: 1 },
         sessId,
       );
 
       return `Clicked "${selector}" at (${Math.round(rect.x)}, ${Math.round(rect.y)})`;
-    }, null, sessionId);
+    }, undefined, sessionId);
   }
 
   async browseType(args: Record<string, any> = {}) {
@@ -678,9 +600,9 @@ class ObscuraServer {
     }
     const url = sessionId ? (args.url || null) : this.validateUrl(args.url);
 
-    return await this.withPage(url, async (sessId) => {
+    return await this.withPage(url, async (sessId: string) => {
       // Focus the element first
-      const focusResult = await this.cdp.send(
+      const focusResult = await this.cdp!.send(
         "Runtime.evaluate",
         {
           expression: `JSON.stringify((() => {
@@ -710,7 +632,7 @@ class ObscuraServer {
         const char = text[i];
         const keyCode = char.charCodeAt(0);
 
-        await this.cdp.send(
+        await this.cdp!.send(
           "Input.dispatchKeyEvent",
           {
             type: "rawKeyDown",
@@ -722,13 +644,13 @@ class ObscuraServer {
           sessId,
         );
 
-        await this.cdp.send(
+        await this.cdp!.send(
           "Input.dispatchKeyEvent",
           { type: "char", text: char, key: char, windowsVirtualKeyCode: keyCode },
           sessId,
         );
 
-        await this.cdp.send(
+        await this.cdp!.send(
           "Input.dispatchKeyEvent",
           { type: "keyUp", windowsVirtualKeyCode: keyCode, key: char, code: `Key${char.toUpperCase()}` },
           sessId,
@@ -736,15 +658,15 @@ class ObscuraServer {
       }
 
       return `Typed "${text}" into "${selector}" (${text.length} characters)`;
-    }, null, sessionId);
+    }, undefined, sessionId);
   }
 
   async sessionCreate(args: Record<string, any> = {}) {
-    const url = args.url ? this.validateUrl(args.url) : null;
-    const id = await this.sessions.create(url);
+    const url = args.url ? this.validateUrl(args.url) : undefined;
+    const id = await this.sessions!.create(url);
     if (args.clearCookies) {
-      const sess = this.sessions.get(id);
-      await this.cdp.send("Network.clearBrowserCookies", {}, sess.sessionId).catch(() => {});
+      const sess = this.sessions!.get(id);
+      await this.cdp!.send("Network.clearBrowserCookies", {}, sess.sessionId).catch(() => {});
     }
     return `Created session: ${id}`;
   }
@@ -752,12 +674,12 @@ class ObscuraServer {
   async sessionClose(args: Record<string, any> = {}) {
     const id = args.session_id;
     if (!id) throw new Error("Invalid argument: session_id is required");
-    await this.sessions.close(id);
+    await this.sessions!.close(id);
     return `Closed session: ${id}`;
   }
 
   async sessionList() {
-    const list = this.sessions.list();
+    const list = this.sessions!.list();
     if (list.length === 0) return "No active sessions.";
     return list.map((s) => `  ${s.id} (created: ${s.createdAt}, last used: ${s.lastUsedAt})`).join("\n");
   }
@@ -766,21 +688,21 @@ class ObscuraServer {
     const id = args.session_id;
     if (!id) throw new Error("Invalid argument: session_id is required");
     const url = this.validateUrl(args.url);
-    const sess = this.sessions.get(id);
+    const sess = this.sessions!.get(id);
     if (args.userAgent) {
-      await this.cdp.send("Network.setUserAgentOverride", { userAgent: args.userAgent }, sess.sessionId).catch(() => {});
+      await this.cdp!.send("Network.setUserAgentOverride", { userAgent: args.userAgent }, sess.sessionId).catch(() => {});
     }
     if (args.headers && typeof args.headers === "object") {
-      const hdrs = {};
+      const hdrs: Record<string, string> = {};
       for (const [k, v] of Object.entries(args.headers)) {
         if (typeof v === "string") hdrs[k] = v;
       }
       if (Object.keys(hdrs).length > 0) {
-        await this.cdp.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sess.sessionId).catch(() => {});
+        await this.cdp!.send("Network.setExtraHTTPHeaders", { headers: hdrs }, sess.sessionId).catch(() => {});
       }
     }
     const navReady = this.waitForNavigation(sess.sessionId);
-    await this.cdp.send("Page.navigate", { url }, sess.sessionId);
+    await this.cdp!.send("Page.navigate", { url }, sess.sessionId);
     await navReady;
     return `Navigated to ${url}`;
   }
@@ -791,7 +713,7 @@ class ObscuraServer {
     const selector = args.selector;
     const expression = args.expression;
     const timeoutMs = Math.min(Math.max(1000, Number(args.timeout) || 30000), 120000);
-    const sess = this.sessions.get(id);
+    const sess = this.sessions!.get(id);
 
     const condition = selector
       ? `document.querySelector(${JSON.stringify(selector)}) !== null`
@@ -801,7 +723,7 @@ class ObscuraServer {
 
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      const result = await this.cdp.send("Runtime.evaluate", { expression: condition }, sess.sessionId);
+      const result = await this.cdp!.send("Runtime.evaluate", { expression: condition }, sess.sessionId);
       if (result?.result?.value === true || result?.result?.value === "true") {
         return `Condition met after ${Date.now() - start}ms`;
       }
@@ -815,8 +737,8 @@ class ObscuraServer {
     if (!id) throw new Error("Invalid argument: session_id is required");
     const expression = args.expression;
     if (!expression || typeof expression !== "string") throw new Error("Invalid argument: expression is required");
-    const sess = this.sessions.get(id);
-    const result = await this.cdp.send("Runtime.evaluate", { expression }, sess.sessionId);
+    const sess = this.sessions!.get(id);
+    const result = await this.cdp!.send("Runtime.evaluate", { expression }, sess.sessionId);
     if (result.exceptionDetails) {
       throw new Error(`JS exception: ${result.exceptionDetails.text || JSON.stringify(result.exceptionDetails)}`);
     }
@@ -838,10 +760,10 @@ class ObscuraServer {
       }
     }
 
-    return await this.withPage(url, async (sessionId) => {
+    return await this.withPage(url, async (sessionId: string) => {
       let output = "";
       if (format === "markdown") {
-        const result = await this.cdp.send("LP.getMarkdown", {}, sessionId);
+        const result = await this.cdp!.send("LP.getMarkdown", {}, sessionId);
         output = result?.markdown || "";
       } else if (format === "html") {
         output = await this.getOuterHtml(sessionId);
@@ -849,21 +771,21 @@ class ObscuraServer {
         const html = await this.getOuterHtml(sessionId);
         output = extractLinks(html, url);
       } else if (format === "cookies") {
-        await this.cdp.send("Network.enable", {}, sessionId).catch(() => {});
-        const result = await this.cdp.send("Network.getCookies", {}, sessionId);
+        await this.cdp!.send("Network.enable", {}, sessionId).catch(() => {});
+        const result = await this.cdp!.send("Network.getCookies", {}, sessionId);
         const pageCookies = result.cookies || [];
         if (pageCookies.length === 0) {
           output = "No cookies found for this page.";
         } else {
           output = pageCookies
             .map(
-              (c) =>
+              (c: Cookie) =>
                 `${c.name}=${c.value} (domain: ${c.domain}, path: ${c.path}${c.expires && c.expires > 0 ? `, expires: ${new Date(c.expires * 1000).toISOString()}` : ", session"})`,
             )
             .join("\n");
         }
       } else if (format === "axtree") {
-        const axResult = await this.cdp.send("Accessibility.getFullAXTree", {}, sessionId);
+        const axResult = await this.cdp!.send("Accessibility.getFullAXTree", {}, sessionId);
         const nodes = axResult.nodes || [];
         if (nodes.length === 0) {
           output = "No accessibility tree nodes found.";
@@ -883,13 +805,13 @@ class ObscuraServer {
             lines.push(parts.join(""));
             const desc = n.description?.value || "";
             if (desc) lines.push(`  description: ${desc}`);
-            const props = (n.properties || []).filter((p) => p.value?.value === true).map((p) => p.name);
+            const props = (n.properties || []).filter((p: { value?: { value?: boolean } }) => p.value?.value === true).map((p: { name: string }) => p.name);
             if (props.length) lines.push(`  states: ${props.join(", ")}`);
           }
           output = lines.join("\n");
         }
       } else if (format === "layout") {
-        const layoutResult = await this.cdp.send("Page.getLayoutMetrics", {}, sessionId);
+        const layoutResult = await this.cdp!.send("Page.getLayoutMetrics", {}, sessionId);
         const vp = layoutResult.layoutViewport || {};
         const cs = layoutResult.contentSize || {};
         const visual = layoutResult.visualViewport || {};
@@ -905,7 +827,7 @@ class ObscuraServer {
       }
 
       if (evalExpr) {
-        const result = await this.cdp.send("Runtime.evaluate", { expression: evalExpr }, sessionId);
+        const result = await this.cdp!.send("Runtime.evaluate", { expression: evalExpr }, sessionId);
         let evalOutput;
         if (result.exceptionDetails) {
           const detail = result.exceptionDetails.exception || result.exceptionDetails;
@@ -1220,9 +1142,9 @@ class ObscuraServer {
           return { content: [{ type: "text", text: output }] };
         }
         throw new Error(`Tool not found: ${name}`);
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
-          content: [{ type: "text", text: `Execution Error: ${error.message}` }],
+          content: [{ type: "text", text: `Execution Error: ${error instanceof Error ? error.message : String(error)}` }],
           isError: true,
         };
       }
@@ -1261,7 +1183,7 @@ class ObscuraServer {
         }
 
         await transport.handleRequest(req, res);
-      } catch (error: any) {
+      } catch (error: unknown) {
         if (!res.headersSent) {
           res.statusCode = 500;
           res.setHeader("Content-Type", "application/json");
@@ -1270,7 +1192,7 @@ class ObscuraServer {
               jsonrpc: "2.0",
               error: {
                 code: -32603,
-                message: error.message || "Internal server error",
+                message: error instanceof Error ? error.message : String(error),
               },
               id: null,
             }),
@@ -1318,7 +1240,7 @@ class ObscuraServer {
       let settled = false;
       let outputBuffer = "";
 
-      const fail = (error) => {
+      const fail = (error: Error) => {
         if (settled) {
           return;
         }
@@ -1341,12 +1263,13 @@ class ObscuraServer {
         resolve();
       };
 
+      const proc = this.obscuraProcess;
       const cleanupListeners = () => {
-        if (!this.obscuraProcess) {
+        if (!proc) {
           return;
         }
-        this.obscuraProcess.stdout.removeListener("data", onData);
-        this.obscuraProcess.stderr.removeListener("data", onData);
+        proc.stdout!.removeListener("data", onData);
+        proc.stderr!.removeListener("data", onData);
       };
 
       const startupTimer = setTimeout(() => {
@@ -1358,7 +1281,7 @@ class ObscuraServer {
         );
       }, OBSCURA_STARTUP_TIMEOUT_MS);
 
-      const onData: any = async (chunk: any) => {
+      const onData = async (chunk: Buffer) => {
         const output = chunk.toString("utf8");
         outputBuffer = `${outputBuffer}${output}`.slice(-4000);
         console.error(`Obscura Service: ${output.trim()}`);
@@ -1369,12 +1292,12 @@ class ObscuraServer {
 
         try {
           this.cdp = new CdpClient(match[1]);
-          await this.cdp.connect();
+          await this.cdp!.connect();
           console.error(`Connected to Obscura CDP at ${match[1]}`);
           this.sessions = new SessionManager(this.cdp);
           succeed();
-        } catch (error: any) {
-          fail(new Error(`Failed to connect to Obscura CDP: ${error.message}`));
+        } catch (error: unknown) {
+          fail(new Error(`Failed to connect to Obscura CDP: ${error instanceof Error ? error.message : String(error)}`));
         }
       };
 
@@ -1409,10 +1332,10 @@ class ObscuraServer {
         stdio: ["ignore", "pipe", "pipe"],
       });
 
-      this.obscuraProcess.stdout.on("data", onData);
-      this.obscuraProcess.stderr.on("data", onData);
+      this.obscuraProcess!.stdout!.on("data", onData);
+      this.obscuraProcess!.stderr!.on("data", onData);
 
-      this.obscuraProcess.on("error", (error: any) => {
+      this.obscuraProcess.on("error", (error: Error) => {
         fail(
           new Error(
             `Failed to start Obscura service binary (${obscuraPath}): ${error.message}`,
@@ -1420,7 +1343,7 @@ class ObscuraServer {
         );
       });
 
-      this.obscuraProcess.on("close", (code) => {
+      this.obscuraProcess.on("close", (code: number) => {
         const message = `Obscura service process exited with code ${code}`;
         console.error(message);
         this.obscuraProcess = null;
@@ -1434,11 +1357,11 @@ class ObscuraServer {
 
   async stopObscuraService() {
     if (this.sessions) {
-      this.sessions.stop();
+      this.sessions!.stop();
       this.sessions = null;
     }
     if (this.cdp) {
-      this.cdp.close();
+      this.cdp!.close();
       this.cdp = null;
     }
     if (this.obscuraProcess) {
@@ -1490,8 +1413,8 @@ if (arg === "install") {
     await server.run();
   }
 
-  main().catch((error: any) => {
-    console.error("Fatal error:", error.message);
+  main().catch((error: unknown) => {
+    console.error("Fatal error:", error instanceof Error ? error.message : String(error));
     process.exit(1);
   });
 }
