@@ -1,5 +1,8 @@
 # obscura-mcp
 
+[![npm version](https://img.shields.io/npm/v/obscura-mcp)](https://www.npmjs.com/package/obscura-mcp)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 An MCP server adapter for [Obscura](https://github.com/h4ckf0r0day/obscura), a lightweight Rust headless browser for scraping and AI agent automation.
 
 Exposes Obscura's native CDP capabilities through a clean MCP interface — no Chrome dependency, no heavyweight browser automation.
@@ -10,11 +13,18 @@ Exposes Obscura's native CDP capabilities through a clean MCP interface — no C
 npm install -g obscura-mcp
 ```
 
-The npm package itself is a lightweight Node.js wrapper (~20 KB). The browser binary (~80 MB) is downloaded automatically on first use — no separate install step needed.
+The npm package itself is a small Node.js wrapper (~20 KB). The browser binary (~80 MB) is downloaded automatically on first use — no separate install step needed.
 
 The binary is cached at `~/.obscura/bin/` and survives npm upgrades.
 
+**Pre-release builds** are published under the `dev` tag:
+
+```bash
+npm install -g obscura-mcp@dev
+```
+
 To use a custom binary path:
+
 ```bash
 export OBSCURA_PATH=/path/to/obscura
 ```
@@ -39,7 +49,7 @@ Most MCP clients (Claude Desktop, Cline, Continue) connect via `stdio`. The `str
 
 ## Tools
 
-Four tools cover the essentials of browsing, interacting, and scraping — read pages, click elements, run persistent sessions, and scrape at scale.
+Four tools cover browsing, interacting, session persistence, and bulk scraping.
 
 ### `browse_page` — one-shot page reading
 
@@ -53,6 +63,7 @@ Get content from any page in a single call. Combine output format with optional 
 | `cookies` | `array` | — | Cookies to inject `[{name, value, domain?, path?, ...}]` |
 | `user_agent` | `string` | — | Override the browser user-agent string |
 | `headers` | `object` | — | Extra HTTP headers `{key: value, ...}` |
+| `stealth` | `boolean` | `true` | Accepted for compatibility; stealth is controlled by the Obscura server |
 
 **Examples:**
 
@@ -80,7 +91,7 @@ When `eval` is provided, the JavaScript result is appended to the format output 
 
 ### `browse_interact` — one-shot page actions
 
-Click an element or type text into a page. One call, no session management needed. For multi-step interactions (login → wait → extract), use `browse_session` instead.
+Click an element or type text into a page. For multi-step interactions (login → wait → extract), use `browse_session` instead.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -89,6 +100,7 @@ Click an element or type text into a page. One call, no session management neede
 | `selector` | `string` | — | CSS selector for the target element |
 | `text` | `string` | — | Text to type (required when `action` is `"type"`) |
 | `cookies` | `array` | — | Cookies to inject `[{name, value, ...}]` |
+| `stealth` | `boolean` | `true` | Accepted for compatibility; stealth is controlled by the Obscura server |
 
 **Examples:**
 
@@ -250,12 +262,29 @@ After global npm install, `obscura-mcp` is on your PATH — no absolute paths ne
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OBSCURA_PATH` | — | Path to custom Obscura binary |
+| `OBSCURA_STEALTH` | — | Enable stealth mode (anti-detection) |
+| `OBSCURA_PROXY` | — | Proxy URL for all traffic |
+| `OBSCURA_USER_AGENT` | — | Default user-agent override |
 | `MCP_HTTP_HOST` | `127.0.0.1` | HTTP transport host |
 | `MCP_HTTP_PORT` | `3000` | HTTP transport port |
 | `MCP_TRANSPORT` | `stdio` | Transport mode: `stdio` or `streamable-http` |
 | `OBSCURA_STARTUP_TIMEOUT_MS` | `15000` | Milliseconds to wait for Obscura CDP to start |
 | `OBSCURA_NAVIGATION_WAIT_MS` | `3000` | Milliseconds to wait after page navigation |
 | `CDP_REQUEST_TIMEOUT_MS` | `10000` | Milliseconds to wait for CDP response |
+
+## Development
+
+Built with TypeScript, compiled to `dist/`, tested with Vitest.
+
+```bash
+git clone https://github.com/Metadrama/obscura-mcp
+cd obscura-mcp
+npm install
+npm run build
+npm test
+```
+
+All 36 integration tests run against a real Obscura binary (auto-downloaded on first run). Tests use `StdioClientTransport` and cover every tool, format, and action.
 
 ## Why Obscura?
 
