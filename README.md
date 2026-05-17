@@ -1,12 +1,6 @@
 # obscura-mcp — ARCHIVED
 
-> **⚠️ This project is archived.**
->
-> As of [Obscura v0.1.4](https://github.com/h4ckf0r0day/obscura/releases/tag/v0.1.4), the upstream project ships its own MCP server via `obscura mcp` with 12 browser tools over stdio and HTTP. This npm wrapper is no longer needed.
->
-> obscura-mcp was built as a Node.js bridge before upstream MCP existed — it auto-downloaded the Obscura binary and exposed it through the Model Context Protocol. Upstream caught up quickly, which is a good sign for the project.
->
-> The npm package (`obscura-mcp`) has been deprecated with a notice pointing to the official MCP server.
+> **⚠️ Archived.** Upstream ships native MCP since [v0.1.4](https://github.com/h4ckf0r0day/obscura/releases/tag/v0.1.4) (`obscura mcp`). npm package deprecated.
 
 [![npm version](https://img.shields.io/npm/v/obscura-mcp)](https://www.npmjs.com/package/obscura-mcp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
